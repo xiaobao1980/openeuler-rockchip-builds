@@ -11,6 +11,8 @@
 #   BOARD_CONF  板级配置（默认 boards/h96-m9/board.conf）
 #   WORK        中间目录（默认 ./work，CI 里建议放 /mnt）
 #   ROOT_PW     root 密码（默认 openeuler）
+#   ADMIN_USER / ADMIN_PW   非 root 管理员账号（默认 openeuler / 同 ROOT_PW），日常登这个
+#   SSH_PUBKEY              root 的 SSH 公钥；传入则只允许密钥登录、关闭 root 密码
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
@@ -37,6 +39,9 @@ OE_XZ="${2:?缺 openEuler qcow2.xz}"
 OUT_IMG="${3:?缺输出镜像路径}"
 WORK="${WORK:-$HERE/../work}"
 ROOT_PW="${ROOT_PW:-openeuler}"
+ADMIN_USER="${ADMIN_USER:-openeuler}"
+ADMIN_PW="${ADMIN_PW:-$ROOT_PW}"
+SSH_PUBKEY="${SSH_PUBKEY:-}"
 
 # --- CI 覆盖：workflow 的 inputs 落到 board.conf 推导出来的默认值上 -----------
 # 不在这里合并的话，workflow 里选 selinux=permissive 会被 board.conf 的 disabled 静默吃掉
@@ -289,6 +294,57 @@ fi
 for u in cloud-init cloud-init-local cloud-config cloud-final; do
   rm -f "$R/etc/systemd/system/multi-user.target.wants/$u.service" 2>/dev/null || true
 done
+
+# ---------------------------------------------------------------------------
+# 6b. 安全加固：非 root 管理员 + 可选 SSH 公钥
+#     默认 root/openeuler 密码直登只是 bring-up 期方便；长期应登管理员账号、用密钥。
+# ---------------------------------------------------------------------------
+# 1) 非 root 管理员账号（日常登这个，需要时才 sudo）
+if ! grep -q "^${ADMIN_USER}:" "$R/etc/passwd"; then
+  useradd -R "$R" -m -s /bin/bash "$ADMIN_USER" 2>/dev/null \
+    || useradd -m -s /bin/bash "$ADMIN_USER" 2>/dev/null
+  # 兜底：直接写账号库（useradd -R 在精简环境可能不可用）
+  grep -q "^${ADMIN_USER}:" "$R/etc/passwd" || {
+    echo "${ADMIN_USER}:x:1000:1000::/home/${ADMIN_USER}:/bin/bash" >> "$R/etc/passwd"
+    grep -q "^${ADMIN_USER}:" "$R/etc/group" || echo "${ADMIN_USER}:x:1000:" >> "$R/etc/group"
+    mkdir -p "$R/home/${ADMIN_USER}"; chmod 750 "$R/home/${ADMIN_USER}"
+  }
+fi
+# 设密码（写 shadow 哈希，绕开 PAM/SELinux）
+if command -v openssl >/dev/null; then
+  AH=$(openssl passwd -6 "$ADMIN_PW")
+  awk -F: -v u="$ADMIN_USER" -v h="$AH" 'BEGIN{OFS=":"} $1==u{ $2=h } {print}' "$R/etc/shadow" > "$R/etc/shadow.new"
+  if ! grep -q "^${ADMIN_USER}:" "$R/etc/shadow"; then
+    echo "${ADMIN_USER}:${AH}:18000:0:99999:7:::" >> "$R/etc/shadow.new"
+  fi
+  mv "$R/etc/shadow.new" "$R/etc/shadow"; chmod 000 "$R/etc/shadow"
+fi
+# 加入 wheel（openEuler 的 sudo 默认放行 %wheel）；wheel 组缺失则补建
+grep -q '^wheel:' "$R/etc/group" || groupadd -R "$R" wheel 2>/dev/null || true
+usermod -R "$R" -aG wheel "$ADMIN_USER" 2>/dev/null \
+  || sed -i -E "s/^(${ADMIN_USER}:[^:]*:[^:]*:[^:]*:)/\\1wheel/" "$R/etc/group" 2>/dev/null || true
+# sudoers 兜底：明确放行 wheel（openEuler 自带的可能被注释）
+if [ -d "$R/etc/sudoers.d" ]; then
+  printf '%%%%wheel ALL=(ALL) ALL\n' > "$R/etc/sudoers.d/wheel"
+  chmod 440 "$R/etc/sudoers.d/wheel"
+fi
+info "已建管理员账号 $ADMIN_USER（sudo 需密码），日常登这个而非 root"
+
+# 2) SSH 公钥（可选）：传入则只允许密钥登录，关闭 root 密码
+if [ -n "$SSH_PUBKEY" ]; then
+  mkdir -p "$R/root/.ssh"; chmod 700 "$R/root/.ssh"
+  printf '%s\n' "$SSH_PUBKEY" >> "$R/root/.ssh/authorized_keys"
+  chmod 600 "$R/root/.ssh/authorized_keys"; chown -R 0:0 "$R/root/.ssh"
+  if [ -f "$R/etc/ssh/sshd_config" ]; then
+    sed -i -E 's/^#?\s*PermitRootLogin\s+.*/PermitRootLogin prohibit-password/' "$R/etc/ssh/sshd_config"
+    grep -qE '^PermitRootLogin\s+prohibit-password' "$R/etc/ssh/sshd_config" || echo 'PermitRootLogin prohibit-password' >> "$R/etc/ssh/sshd_config"
+    sed -i -E 's/^#?\s*PasswordAuthentication\s+.*/PasswordAuthentication no/' "$R/etc/ssh/sshd_config"
+    grep -qE '^PasswordAuthentication\s+no' "$R/etc/ssh/sshd_config" || echo 'PasswordAuthentication no' >> "$R/etc/ssh/sshd_config"
+  fi
+  info "已注入 root 公钥并关闭密码登录（prohibit-password）"
+else
+  info "未传 SSH_PUBKEY：保留 root 密码登录（上板后建议改强密码 + 关闭密码登录）"
+fi
 
 # ---------------------------------------------------------------------------
 # 7. 集成安装（可选）：把 IoT 服务栈烘焙进 rootfs

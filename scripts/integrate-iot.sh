@@ -26,9 +26,11 @@
 #   --adapter=zstack|ember|ezsp|deconz  默认 zstack
 #   --node-version=22                  Node.js 主版本
 #   --npm-registry=https://registry.npmmirror.com
+#   --node-red-nodes="pkg1 pkg2"   额外装的 Node-RED 扩展节点（默认空；装到 userDir）
 #   --no-clean                        保留 dnf/npm 缓存（调试用，会多占 ~200MB）
 #
 # 环境变量同义：IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER
+#              IOT_NODERED_NODES（见 --node-red-nodes）
 # ============================================================================
 set -euo pipefail
 
@@ -46,6 +48,7 @@ COORD="${IOT_COORD:-}"
 ADAPTER="${IOT_ADAPTER:-zstack}"
 NODE_MAJOR="${IOT_NODE_VERSION:-22}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+NODE_RED_NODES="${IOT_NODERED_NODES:-}"
 DO_CLEAN=1
 
 for a in "$@"; do
@@ -61,6 +64,7 @@ for a in "$@"; do
     --adapter=*)       ADAPTER="${a#*=}" ;;
     --node-version=*)  NODE_MAJOR="${a#*=}" ;;
     --npm-registry=*)  NPM_REGISTRY="${a#*=}" ;;
+    --node-red-nodes=*) NODE_RED_NODES="${a#*=}" ;;
     --no-clean)        DO_CLEAN=0 ;;
     *) echo "未知参数: $a" >&2; exit 2 ;;
   esac
@@ -357,6 +361,21 @@ setup_nodered() {
   uid=$(awk -F: '$1=="nodered"{print $3}' "$R/etc/passwd" | head -1)
   gid=$(awk -F: '$1=="nodered"{print $4}' "$R/etc/passwd" | head -1)
   [ -n "$uid" ] && chown -R "$uid:$gid" "$R/var/lib/node-red"
+
+  # 扩展节点（可选，--node-red-nodes / IOT_NODERED_NODES）：装到 userDir
+  # /var/lib/node-red，不污染全局；以 nodered 身份安装，权限与运行态一致。
+  if [ -n "$NODE_RED_NODES" ]; then
+    log "安装扩展节点: $NODE_RED_NODES"
+    if cr "cd /var/lib/node-red && sudo -u nodered npm install --no-audit --no-fund $NODE_RED_NODES" >/tmp/iot-nr-nodes.log 2>&1 \
+       || cr "cd /var/lib/node-red && npm install --no-audit --no-fund $NODE_RED_NODES" >/tmp/iot-nr-nodes.log 2>&1; then
+      info "扩展节点已装入 /var/lib/node-red/node_modules"
+    else
+      tail -25 /tmp/iot-nr-nodes.log >&2
+      warn "扩展节点安装失败（可能不支持当前 Node-RED 版本），继续"
+    fi
+    # 装的时候是 root/npm 写的，归还属主给 nodered，避免运行态 Permission denied
+    [ -n "$uid" ] && chown -R "$uid:$gid" "$R/var/lib/node-red"
+  fi
 
   cat > "$R/etc/systemd/system/node-red.service" <<EOF
 [Unit]

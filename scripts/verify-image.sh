@@ -66,6 +66,9 @@ mount -o ro "$P1" "$MP" || { bad "挂载 $P1 失败"; exit 1; }
 echo "-- 系统身份"
 chk "/etc/os-release 是 openEuler"     "grep -q '^ID=\"*openEuler' '$MP/etc/os-release'"
 chk "/etc/passwd 有 root"              "grep -q '^root:' '$MP/etc/passwd'"
+chk "管理员账号 openeuler 存在"        "grep -q '^openeuler:' '$MP/etc/passwd'"
+chk "openeuler 在 wheel 组"            "grep -q '^wheel:.*openeuler' '$MP/etc/group'"
+chk "sudoers 放行 wheel"              "grep -q '%wheel' '$MP/etc/sudoers.d/wheel' 2>/dev/null || grep -q '%wheel' '$MP/etc/sudoers' 2>/dev/null"
 chk "/usr/sbin/depmod 存在"             "[ -x '$MP/usr/sbin/depmod' ]"
 chk "/usr/sbin/sshd 存在"               "[ -x '$MP/usr/sbin/sshd' ]"
 
@@ -117,6 +120,8 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
       chk "listener ${IOT_MQTT_PORT:-1883}"   "grep -q 'listener ${IOT_MQTT_PORT:-1883}' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
       chk "listener ${IOT_WS_PORT:-8083} ws"  "grep -q 'listener ${IOT_WS_PORT:-8083}' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
       chk "mosquitto 开机自启"                "[ -L '$MP/etc/systemd/system/multi-user.target.wants/mosquitto.service' ]"
+      chk "mosquitto 不用 log_dest journal（openEuler 未编 journal 支持，会 exit 3）" "! grep -qE '^log_dest[[:space:]]+journal' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
+      chk "mosquitto 用 log_dest stderr"      "grep -qE '^log_dest[[:space:]]+stderr' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
       ;;
   esac
   case ",${IOT_STACK:-}," in
