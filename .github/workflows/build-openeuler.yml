@@ -1,0 +1,274 @@
+name: Build openEuler Image (RK35xx)
+
+# ============================================================================
+# 只做「嫁接」，不编译任何东西：
+#   openEuler 官方 aarch64 整机镜像  →  取出 rootfs
+#   本仓库 boot-assets Release       →  bootloader(16MiB) + Image + dtb + modules
+#   两者拼成一个可烧写的 .img
+#
+# 为什么必须 arm64 原生 runner：
+#   /lib/modules 的 modules.dep 必须用目标 rootfs 自带的 depmod 生成。宿主的 kmod
+#   版本不同会写出不兼容的 modules.dep.bin，症状是「能启动、串口能登录，但 lsmod
+#   是空的、ip a 只有 lo、音频全哑」，且几乎不会往模块依赖文件上想。
+#   chroot 进 aarch64 rootfs 需要 QEMU binfmt；用 ubuntu-24.04-arm 直接省掉。
+#
+# 前置：该板必须已有 boot-assets Release（用 publish-boot-assets.yml 产出）。
+# 板卡清单来自上游 armbian/build，由 sync-boards.sh 同步为 boards/boards.tsv。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: "板卡：h96-m9 / 逗号分隔多块 / all(全系98块) / soc:rk3576"
+        type: string
+        required: true
+        default: "h96-m9"
+      oe_version:
+        description: "openEuler 版本（取官方 virtual_machine_img 的 aarch64 qcow2）"
+        type: choice
+        required: true
+        default: 24.03-LTS-SP4
+        options:
+          - 24.03-LTS-SP4
+          - 24.03-LTS-SP3
+          - 24.03-LTS-SP2
+          - 24.03-LTS
+      selinux:
+        description: "SELinux（首次 bring-up 必须 disabled；enforcing 下 chroot 改密码会失败）"
+        type: choice
+        required: true
+        default: disabled
+        options:
+          - disabled
+          - permissive
+          - enforcing
+      cma_override:
+        description: "覆盖 CMA（留空=按 SoC 自动：3528/3566/3568→128M, 3576→256M, 3588→512M）"
+        type: string
+        required: false
+        default: ""
+      root_password:
+        description: "root 密码（上板验证后请立即修改）"
+        type: string
+        required: false
+        default: openeuler
+      max_parallel:
+        description: "并发构建数（arm runner 每个都跑满 4 核，建议 2）"
+        type: string
+        required: false
+        default: "2"
+      publish_release:
+        description: "构建成功后发布到 GitHub Releases"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. 解析板卡清单 → 矩阵
+  #    每次运行都先同步上游，所以上游新增 RK35xx 板卡后无需改本仓库任何文件
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: 解析板卡清单
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      count: ${{ steps.mk.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 同步上游板卡清单
+        run: bash scripts/sync-boards.sh
+
+      - name: 生成矩阵
+        id: mk
+        env:
+          SEL: ${{ inputs.boards }}
+        run: |
+          set -euo pipefail
+          list=$(awk -F'\t' -v sel="$SEL" '
+            $1=="board" || $1 ~ /^#/ { next }
+            $6!="OK" { next }
+            BEGIN{ n=split(sel, want, ",") }
+            {
+              hit = 0
+              for (i=1;i<=n;i++) {
+                w = want[i]
+                if (w == "all") hit = 1
+                else if (w == $1) hit = 1
+                else if (substr(w,1,4) == "soc:" && substr(w,5) == $3) hit = 1
+              }
+              if (hit) print $1
+            }' boards/boards.tsv | jq -R . | jq -sc .)
+          cnt=$(printf '%s' "$list" | jq 'length')
+          echo "matrix={\"board\":$list}" >> "$GITHUB_OUTPUT"
+          echo "count=$cnt" >> "$GITHUB_OUTPUT"
+          echo "选中 $cnt 块：$(printf '%s' "$list" | jq -r 'join(", ")')" | head -c 2000
+          if [ "$cnt" -eq 0 ]; then
+            echo "::error::没有匹配的板卡。检查输入 '$SEL'，或该板 status 不是 OK（缺 DTB）。"
+            exit 1
+          fi
+
+      - name: 上传清单（可追溯这次用了哪个上游版本）
+        uses: actions/upload-artifact@v4
+        with:
+          name: boards-list
+          path: boards/boards.tsv
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2. 逐板构建
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.board }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.count != '0' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      BOARD: ${{ matrix.board }}
+      OE_VER: ${{ inputs.oe_version }}
+      SELINUX_MODE: ${{ inputs.selinux }}
+      CMA_OVERRIDE: ${{ inputs.cma_override }}
+      ROOT_PW: ${{ inputs.root_password }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构断言
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          echo "runner: $arch / $(nproc) core / $(free -g | awk '/Mem:/{print $2}')G RAM / $(df -h / | awk 'NR==2{print $4}') free"
+          [ "$arch" = aarch64 ] || { echo "::error::需要 aarch64 runner"; exit 1; }
+
+      - name: 腾磁盘（arm runner 默认只有 ~14G，本流程峰值 ~7G）
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xz-utils zstd e2fsprogs gdisk rsync qemu-utils jq
+          for t in xz zstd mkfs.ext4 sgdisk rsync qemu-img jq od; do
+            printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+          done
+
+      - name: 解析板级配置
+        id: cfg
+        run: |
+          set -euo pipefail
+          bash scripts/board-resolve.sh "$BOARD" > /tmp/board.conf
+          # shellcheck disable=SC1091
+          . /tmp/board.conf
+          echo "kver=$KERNEL_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$BOOT_ASSETS_TAG" >> "$GITHUB_OUTPUT"
+          echo "prefix=$IMG_PREFIX" >> "$GITHUB_OUTPUT"
+          echo "soc=$FAMILY" >> "$GITHUB_OUTPUT"
+          echo "dtb=$DTB" >> "$GITHUB_OUTPUT"
+          {
+            echo "### \`$BOARD\` — $MODEL"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| SoC | $FAMILY |"
+            echo "| DTB | \`$DTB\` |"
+            echo "| 内核 | \`$KERNEL_VER\` |"
+            echo "| CMA | ${CMA_OVERRIDE:-$CMA} |"
+            echo "| SELinux | ${SELINUX_MODE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 下载 boot 资产
+        run: |
+          set -euo pipefail
+          mkdir -p in
+          TAG="${{ steps.cfg.outputs.tag }}"
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'boot-*.tar.zst*' --dir in 2>/dev/null; then
+            echo "::error::本仓库没有 Release '$TAG'。先跑一次 publish-boot-assets.yml 产出该板的 boot 资产。"
+            echo "::error::或用本机 sudo BOARD=$BOARD ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0 打包后 gh release upload。"
+            exit 1
+          fi
+          ls -lh in/
+          TAR=$(ls in/boot-*.tar.zst | head -1)
+          if [ -f "$TAR.sha256" ]; then ( cd in && sha256sum -c "$(basename "$TAR").sha256" ); fi
+          echo "BOOT_TAR=$TAR" >> "$GITHUB_ENV"
+
+      - name: 下载 openEuler 整机镜像
+        run: |
+          set -euo pipefail
+          BASE="https://dl-cdn.openeuler.openatom.cn/${OE_VER}/virtual_machine_img/aarch64"
+          F="openEuler-${OE_VER}-aarch64.qcow2.xz"
+          mkdir -p in
+          echo "下载 $BASE/$F"
+          curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$BASE/$F"
+          curl -fsSL -o "in/$F.sha256sum" "$BASE/$F.sha256sum" || true
+          if [ -s "in/$F.sha256sum" ]; then
+            ( cd in && sha256sum -c "$F.sha256sum" ) || { echo "::error::校验失败"; exit 1; }
+          fi
+          ls -lh "in/$F"
+          echo "OE_XZ=in/$F" >> "$GITHUB_ENV"
+
+      - name: 拼装镜像
+        run: |
+          set -euo pipefail
+          sudo -E bash scripts/build-image.sh "$BOOT_TAR" "$OE_XZ" "$GITHUB_WORKSPACE/out.img"
+
+      - name: 压缩与校验和
+        id: pack
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          NAME="openEuler-${OE_VER}-${BOARD}-$(. /tmp/board.conf && echo "${KERNEL_VER%%-*}")-${DATE}.img"
+          mv out.img "$NAME"
+          echo "大小: $(du -h "$NAME" | cut -f1)"
+          xz -T0 -6 "$NAME"
+          sha256sum "$NAME.xz" > "$NAME.xz.sha256"
+          ls -lh "$NAME.xz"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openEuler-${{ matrix.board }}
+          path: |
+            *.img.xz
+            *.sha256
+          retention-days: 14
+
+      - name: 发布 Release
+        if: ${{ success() && inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          TAG="${BOARD}-${DATE}-r${GITHUB_RUN_NUMBER}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./*.img.xz ./*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" ./*.img.xz ./*.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "openEuler ${OE_VER} ${BOARD} ${DATE} #${GITHUB_RUN_NUMBER}" \
+              --notes "openEuler ${OE_VER} 用户态 + Armbian vendor 内核（$(. /tmp/board.conf && echo "$KERNEL_VER")）
+          板卡：\`${BOARD}\`   SoC：${{ steps.cfg.outputs.soc }}   DTB：\`${{ steps.cfg.outputs.dtb }}\`
+          SELinux：${SELINUX_MODE}   CMA：${CMA_OVERRIDE:-auto}
+
+          ### 烧写
+          \`\`\`
+          xz -dc ${BOARD}-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+          \`\`\`
+          启动后串口 1500000 8N1 应看到 U-Boot → extlinux → systemd。
+          首次登录后务必 \`passwd\` 改密码；用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`"
+          fi
+          echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

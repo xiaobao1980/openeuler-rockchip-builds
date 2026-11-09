@@ -1,0 +1,12 @@
+# 构建中间产物
+work/
+out/
+*.img
+*.img.xz
+*.img.raw
+*.qcow2
+*.tar.zst
+*.sha256
+
+# macOS
+.DS_Store

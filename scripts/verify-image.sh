@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# ============================================================================
+# 镜像静态校验 —— 上板之前先把能查的都查完，避免把「能开机的废镜像」刷进卡
+# 用法：sudo ./verify-image.sh <out.img>
+# ============================================================================
+set -uo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+BOARD="${BOARD:-h96-m9}"
+if [ -n "${BOARD_CONF:-}" ]; then
+  # shellcheck disable=SC1090
+  . "$BOARD_CONF"
+else
+  # 不用进程替换：部分环境 /dev/fd 不可用，落临时文件更稳
+  _CF=$(mktemp)
+  bash "$HERE/board-resolve.sh" "$BOARD" > "$_CF"
+  # shellcheck disable=SC1090
+  . "$_CF"
+  rm -f "$_CF"
+fi
+
+IMG="${1:?缺镜像路径}"
+MP=$(mktemp -d); LOOP=""
+cleanup() { set +e; umount "$MP" 2>/dev/null; [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; rmdir "$MP" 2>/dev/null; }
+trap cleanup EXIT
+
+PASS=0; FAIL=0
+ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; PASS=$((PASS+1)); }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
+chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+
+echo "== 镜像: $IMG ($(du -h "$IMG" | cut -f1)) =="
+
+# --- 分区表 ---------------------------------------------------------------
+echo "-- 引导与分区"
+chk "GPT 有效 (sgdisk -v)"            "sgdisk -v '$IMG' | grep -q 'No problems found'"
+FIRST=$(sgdisk -i 1 "$IMG" 2>/dev/null | awk -F: '/First sector/{gsub(/ /,"",$2);print $2}')
+chk "分区 1 起点 = LBA $PART_START_LBA (实为 ${FIRST:-?})" "[ '${FIRST:-0}' = '$PART_START_LBA' ]"
+chk "idbloader 区非空 (LBA 64 起)"      "dd if='$IMG' bs=512 skip=64 count=8 status=none | tr -d '\0' | grep -q ."
+
+# --- 文件系统 -------------------------------------------------------------
+LOOP=$(losetup --find --show --partscan "$IMG") || { bad "loop 挂载失败"; exit 1; }
+P1="${LOOP}p1"
+chk "分区 1 文件系统 = ext4"           "[ \"\$(blkid -o value -s TYPE '$P1')\" = ext4 ]"
+chk "文件系统 UUID = $ROOT_UUID"        "[ \"\$(blkid -o value -s UUID '$P1')\" = '$ROOT_UUID' ]"
+mount -o ro "$P1" "$MP" || { bad "挂载 $P1 失败"; exit 1; }
+
+echo "-- 系统身份"
+chk "/etc/os-release 是 openEuler"     "grep -q '^ID=\"*openEuler' '$MP/etc/os-release'"
+chk "/etc/passwd 有 root"              "grep -q '^root:' '$MP/etc/passwd'"
+chk "/usr/sbin/depmod 存在"             "[ -x '$MP/usr/sbin/depmod' ]"
+chk "/usr/sbin/sshd 存在"               "[ -x '$MP/usr/sbin/sshd' ]"
+
+echo "-- 内核与模块"
+chk "/boot/Image 存在且 >10MB"          "[ -f '$MP/boot/Image' ] && [ \$(stat -c %s '$MP/boot/Image') -gt 10485760 ]"
+chk "/boot/dtb/rockchip/$DTB 存在"      "[ -f '$MP/boot/dtb/rockchip/$DTB' ]"
+chk "/lib/modules 只有 $KERNEL_VER"     "[ \"\$(ls '$MP/lib/modules')\" = '$KERNEL_VER' ]"
+chk "modules.dep 非空"                  "[ -s '$MP/lib/modules/$KERNEL_VER/modules.dep' ]"
+chk "无 openEuler 自带 vmlinuz 残留"    "! ls '$MP'/boot/vmlinuz* >/dev/null 2>&1"
+
+echo "-- 引导配置"
+CONF="$MP/boot/extlinux/extlinux.conf"
+chk "extlinux.conf 存在"                "[ -f '$CONF' ]"
+chk "cmdline 含 root=UUID=$ROOT_UUID"    "grep -q 'root=UUID=$ROOT_UUID' '$CONF'"
+chk "cmdline 含 cma=$CMA"               "grep -q 'cma=$CMA' '$CONF'"
+chk "cmdline 含 selinux=$SELINUX"        "grep -q 'selinux=$SELINUX' '$CONF'"
+chk "cmdline 未引用 initrd"             "! grep -qE '^[[:space:]]*(initrd|fdtdir)' '$CONF'"
+chk "console=$CONSOLE"                  "grep -q 'console=$CONSOLE' '$CONF'"
+
+echo "-- 挂载表"
+chk "fstab 根挂载用 UUID=$ROOT_UUID"     "grep -qE '^UUID=$ROOT_UUID[[:space:]]+/[[:space:]]' '$MP/etc/fstab'"
+chk "fstab 无 /boot/efi 残留"           "! grep -q '/boot/efi' '$MP/etc/fstab'"
+
+umount "$MP"
+echo
+if [ "$FAIL" -eq 0 ]; then
+  printf '\033[1;32m全部通过：%d 项\033[0m\n' "$PASS"
+else
+  printf '\033[1;31m失败 %d 项 / 通过 %d 项\033[0m\n' "$FAIL" "$PASS"
+  exit 1
+fi

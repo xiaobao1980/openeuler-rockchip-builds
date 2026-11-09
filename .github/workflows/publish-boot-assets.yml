@@ -1,0 +1,162 @@
+name: Publish boot assets (RK35xx)
+
+# ============================================================================
+# 产出一块板的「已验证可启动 boot 资产」，作为 build-openeuler.yml 的输入。
+#
+# 为什么要单独发一次：
+#   整包 Armbian 镜像 ~2.6 GB，每次构建都搬进 CI 既慢又占带宽；而真正需要的只有
+#   前 16 MiB（idbloader + u-boot.itb + GPT）+ /boot/Image + dtb + /lib/modules，
+#   抽出后 ~130 MB，zstd 后 ~50 MB。内核不变就不用重发。
+#
+# 两种来源：
+#   ① image_url —— 指向任何 .img / .img.xz（含 GitHub Release 资产直链）
+#   ② armbian_repo + armbian_tag —— 自动挑该 Release 里的 *.img.xz
+# 也可以完全不走 CI：在板子上直接
+#   sudo BOARD=<id> ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0
+#   gh release create boot-<id>-<kver> out/boot-*.tar.zst*
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "板卡 id（boards/boards.tsv 里的名字，如 h96-m9 / radxa-rock-4d）"
+        type: string
+        required: true
+        default: "h96-m9"
+      image_url:
+        description: "镜像直链（.img / .img.xz）。留空则用下面的 armbian_repo + tag 自动找"
+        type: string
+        required: false
+        default: ""
+      armbian_repo:
+        description: "Armbian 构建产物所在仓库（配合 armbian_tag）"
+        type: string
+        required: false
+        default: "xiaobao1980/armbian-custom-builds"
+      armbian_tag:
+        description: "该仓库的 Release tag（留空=取最新一个含 *.img.xz 的 Release）"
+        type: string
+        required: false
+        default: ""
+      kver_override:
+        description: "覆盖内核版本号（留空=用 board.conf 里的 KERNEL_VER）"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: boot assets / ${{ inputs.board }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      BOARD: ${{ inputs.board }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构断言
+        run: |
+          [ "$(uname -m)" = aarch64 ] || { echo "::error::需要 aarch64 runner"; exit 1; }
+          echo "ok / $(df -h / | awk 'NR==2{print $4}') free"
+
+      - name: 腾磁盘（要解 2.6G 镜像）
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xz-utils zstd e2fsprogs gdisk rsync jq
+          for t in xz zstd sgdisk losetup; do
+            printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+          done
+
+      - name: 解析板级配置
+        id: cfg
+        run: |
+          set -euo pipefail
+          bash scripts/sync-boards.sh || true     # 清单不存在时才真正需要
+          bash scripts/board-resolve.sh "$BOARD" > /tmp/board.conf
+          # shellcheck disable=SC1091
+          . /tmp/board.conf
+          if [ -n "${{ inputs.kver_override }}" ]; then
+            KERNEL_VER="${{ inputs.kver_override }}"
+            sed -i "s/^KERNEL_VER=.*/KERNEL_VER=$KERNEL_VER/" /tmp/board.conf
+          fi
+          TAG="boot-${BOARD}-${KERNEL_VER%%-*}"
+          echo "kver=$KERNEL_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+          echo "dtb=$DTB"       >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL"   >> "$GITHUB_OUTPUT"
+
+      - name: 定位镜像
+        id: img
+        env:
+          IMAGE_URL: ${{ inputs.image_url }}
+          REPO: ${{ inputs.armbian_repo }}
+          TAG: ${{ inputs.armbian_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p in
+          if [ -n "$IMAGE_URL" ]; then
+            URL="$IMAGE_URL"
+          else
+            if [ -z "$TAG" ]; then
+              # 取最近一个含 *.img.xz 的 Release
+              TAG=$(gh release list --repo "$REPO" -L 30 --json tagName,assets \
+                    --jq '.[] | select(any(.assets[]; .name|endswith(".img.xz"))) | .tagName' \
+                    | head -1)
+              [ -n "$TAG" ] || { echo "::error::$REPO 里没有含 *.img.xz 的 Release"; exit 1; }
+              echo "自动选择 Release: $TAG"
+            fi
+            URL=$(gh release view "$TAG" --repo "$REPO" --json assets \
+                  --jq '.assets[] | select(.name|endswith(".img.xz")) | .url' | head -1)
+            [ -n "$URL" ] || { echo "::error::$REPO@$TAG 里没有 .img.xz"; exit 1; }
+            # API 资产 URL 需要用 application/octet-stream 才能拿到二进制
+            gh api "$URL" -H "Accept: application/octet-stream" > in/armbian.img.xz
+            echo "url=(api) $URL" >> "$GITHUB_OUTPUT"
+            echo "file=in/armbian.img.xz" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "下载 $URL"
+          curl -fL --retry 3 -o in/armbian.img "${URL}"
+          echo "file=in/armbian.img" >> "$GITHUB_OUTPUT"
+
+      - name: 抽取 boot 资产
+        run: |
+          set -euo pipefail
+          sudo -E BOARD="$BOARD" bash scripts/make-boot-assets.sh \
+              --from-image "${{ steps.img.outputs.file }}"
+          ls -lh out/
+
+      - name: 发布到 Release
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.cfg.outputs.tag }}"
+          TAR=$(ls out/boot-*.tar.zst | head -1)
+          NOTES="板卡 \`${BOARD}\`（${{ steps.cfg.outputs.model }}）的已验证 boot 资产。
+
+          - SoC：\`$(. /tmp/board.conf && echo "$FAMILY")\`
+          - 内核：\`${{ steps.cfg.outputs.kver }}\`
+          - DTB：\`${{ steps.cfg.outputs.dtb }}\`
+          - 来源：${{ inputs.image_url || inputs.armbian_repo }}
+
+          内容：前 16 MiB bootloader 区（idbloader + u-boot.itb + GPT）、\`/boot/Image\`、
+          \`/boot/dtb/rockchip/*.dtb\`、\`/lib/modules/${{ steps.cfg.outputs.kver }}\`、原 \`extlinux.conf\`。
+          消费方式：build-openeuler.yml 的 board 输入填 \`${BOARD}\` 即可。"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" \
+              --title "boot assets ${BOARD} ${KERNEL_VER:-}" --notes "$NOTES"
+          fi
+          echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

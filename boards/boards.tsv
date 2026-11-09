@@ -1,0 +1,105 @@
+# 由 scripts/sync-boards.sh 从 https://github.com/armbian/build/config/boards@main 生成，勿手改
+# 上游 commit: local   生成时间: 2026-11-09T08:28:14Z
+#
+# 字段: board_id \t model \t soc \t dtb \t family \t status
+# status=OK 可直接构建；NO_DTB 上游用 fdtdir 自动匹配，需手工确认 DTB 名；
+# SOC_UNKNOWN 的 dtb 命名不符合 rk3xxx-*.dtb 规则，需手工确认
+board	model	soc	dtb	family	status
+friendlyelec-rk3588	NanoPi R6/M6, NanoPC T6	?		rockchip-rk3588	NO_DTB
+orangepi3b	Orange Pi 3B	?		rk35xx	NO_DTB
+armsom-sige1	Sige1	rk3528	rk3528-armsom-sige1.dtb	rk35xx	OK
+hinlink-h28k	H28k	rk3528	rk3528-hinlink-h28k.dtb	rk35xx	OK
+hinlink-ht2	HT2	rk3528	rk3528-hinlink-ht2.dtb	rk35xx	OK
+mangopi-m28k	M28K	rk3528	rk3528-mangopi-m28k.dtb	rk35xx	OK
+nanopi-neo3-plus	NanoPi NEO3+	rk3528	rk3528-nanopi-neo3-plus.dtb	rk35xx	OK
+nanopi-r28s	NanoPi R28S	rk3528	rk3528-nanopi-rev03.dtb	rk35xx	OK
+nanopi-zero2	NanoPi Zero2	rk3528	rk3528-nanopi-rev01.dtb	rk35xx	OK
+radxa-e20c	E20C	rk3528	rk3528-radxa-e20c.dtb	rk35xx	OK
+radxa-e24c	E24C	rk3528	rk3528-radxa-e24c-spi.dtb	rk35xx	OK
+rock-2a	ROCK 2A	rk3528	rk3528-rock-2a.dtb	rk35xx	OK
+rock-2f	ROCK 2F	rk3528	rk3528-rock-2f.dtb	rk35xx	OK
+kickpi-k3b	K3B	rk3562	rk3562-kickpi-k3b.dtb	rk35xx	OK
+eltay-rm66	ELTAY RM66	rk3566	rk3566-eltay-rm66-bb-cm4.dtb	rk35xx	OK
+jp-tvbox-3566	JP-TVbox-3566	rk3566	rk3566-jp-tvbox.dtb	rk35xx	OK
+lckfb-taishanpi	LCKFB Taishan Pi	rk3566	rk3566-lckfb-tspi.dtb	rk35xx	OK
+luckfox-core3566	Core3566	rk3566	rk3566-luckfox-core3566.dtb	rk35xx	OK
+nanopi-r3s	NanoPi R3S	rk3566	rk3566-nanopi-r3s.dtb	rk35xx	OK
+nanopi-r3s-lts	NanoPi R3S LTS	rk3566	rk3566-nanopi-r3s-lts.dtb	rk35xx	OK
+odroidm1s	ODROID M1S	rk3566	rk3566-odroid-m1s.dtb	rk35xx	OK
+radxa-zero3	ZERO 3	rk3566	rk3566-radxa-zero3.dtb	rk35xx	OK
+rk3566-box-demo	RK3566 BOX DEMO	rk3566	rk3566-box-demo.dtb	rk35xx	OK
+rock-3c	Rock 3C	rk3566	rk3566-rock-3c.dtb	rk35xx	OK
+station-m2	Station M2	rk3566	rk3566-roc-pc.dtb	rk35xx	OK
+torder-r10d	R10D	rk3566	rk3566-torder-r10d.dtb	rk35xx	OK
+anbernic-rg-ds	RG DS	rk3568	rk3568-anbernic-rg-ds.dtb	rk35xx	OK
+armsom-sige3	Sige3	rk3568	rk3568-armsom-sige3.dtb	rk35xx	OK
+boardcon-sbc3568	SBC3568	rk3568	rk3568-boardcon-sbc-v4.dtb	rk35xx	OK
+dshanpi-r1	100ASK DshanPi R1 / R1+	rk3568	rk3568-dshanpi-r1.dtb	rk35xx	OK
+easepi-a2	EasePi-A2	rk3568	rk3568-easepi-a2.dtb	rk35xx	OK
+easepi-r1	EasePi-R1	rk3568	rk3568-easepi-r1.dtb	rk35xx	OK
+hinlink-h66k	H66K	rk3568	rk3568-hinlink-h66k.dtb	rk35xx	OK
+hinlink-h68k	H68K	rk3568	rk3568-hinlink-h68k.dtb	rk35xx	OK
+hinlink-hnas	HNAS	rk3568	rk3568-hinlink-hnas.dtb	rk35xx	OK
+lubancat2	Lubancat2	rk3568	rk3568-lubancat-2.dtb	rk35xx	OK
+mixtile-edge2	Edge 2	rk3568	rk3568-mixtile-edge2.dtb	rk35xx	OK
+radxa-e25	E25	rk3568	rk3568-radxa-e25.dtb	rk35xx	OK
+rock-3a	Rock 3A	rk3568	rk3568-rock-3a.dtb	rk35xx	OK
+yy3568	YY3568	rk3568	rk3568-yy3568.dtb	rk35xx	OK
+ztl-a568	A568	rk3568	rk3568-ztl-a568.dtb	rk35xx	OK
+anbernic-rg-vita-pro	RG Vita Pro	rk3576	rk3576-anbernic-rg-vita-pro.dtb	rk35xx	OK
+armsom-cm5-io	CM5 IO (RK3576)	rk3576	rk3576-armsom-cm5-io.dtb	rk35xx	OK
+armsom-cm5-rpi-cm4-io	CM5 CM4 IO	rk3576	rk3576-armsom-cm5-rpi-cm4-io.dtb	rk35xx	OK
+armsom-sige5	Sige5	rk3576	rk3576-armsom-sige5.dtb	rk35xx	OK
+bananapim5pro	Banana Pi M5 Pro	rk3576	rk3576-bananapi-m5-pro.dtb	rk35xx	OK
+dshanpi-a1	100ASK DShanPI A1	rk3576	rk3576-100ask-dshanpi-a1.dtb	rk35xx	OK
+dshanpi-a1-cm5-waveshare-cm5-to-pi5-adapter	100ASK DshanPi A1 CM5 on Waveshare CM5-to-Pi5-Adapter	rk3576	rk3576-dshanpi-a1-cm5-waveshare-cm5-to-pi5-adapter.dtb	rk35xx	OK
+lubancat-3-v2	LubanCat 3 v2	rk3576	rk3576-lubancat-3-v2.dtb	rk35xx	OK
+nanopi-m5	NanoPi M5	rk3576	rk3576-nanopi-m5.dtb	rk35xx	OK
+nanopi-r76s	NanoPi R76S	rk3576	rk3576-nanopi-r76s.dtb	rk35xx	OK
+photonicat2	Photonicat2	rk3576	rk3576-photonicat2.dtb	rk35xx	OK
+radxa-cm4-io	CM4-IO	rk3576	rk3576-radxa-cm4-io.dtb	rk35xx	OK
+radxa-rock-4d	Rock 4D	rk3576	rk3576-rock-4d-spi.dtb	rk35xx	OK
+recomputer-rk3576-devkit	reComputer RK3576	rk3576	rk3576-recomputer-rk3576-devkit.dtb	rk35xx	OK
+recomputer-rk3576-industrial	reComputer RK3576 Industrial	rk3576	rk3576-recomputer-industrial.dtb	rk35xx	OK
+recomputer-rk3576-module-devkit	reComputer RK3576 Module Dev Kit	rk3576	rk3576-recomputer-rk3576-module-devkit.dtb	rk35xx	OK
+armsom-aim7-io	AIM7 IO	rk3588	rk3588-armsom-aim7-io.dtb	rockchip-rk3588	OK
+armsom-sige7	Sige7	rk3588	rk3588-armsom-sige7.dtb	rockchip-rk3588	OK
+armsom-w3	W3	rk3588	rk3588-armsom-w3.dtb	rockchip-rk3588	OK
+bananapim7	Banana Pi M7	rk3588	rk3588-bananapi-m7.dtb	rockchip-rk3588	OK
+boardcon-em3588	EM3588	rk3588	rk3588-boardcon-em-v2.dtb	rockchip-rk3588	OK
+cm3588-nas	CM3588 NAS	rk3588	rk3588-friendlyelec-cm3588-nas.dtb	rockchip-rk3588	OK
+coolpi-cm5	CM5 EVB	rk3588	rk3588-coolpi-cm5-evb.dtb	rockchip-rk3588	OK
+coolpi-genbook	GenBook	rk3588	rk3588-coolpi-cm5-genbook.dtb	rockchip-rk3588	OK
+cyber-aib-rk3588	Cyber Aib RK3588	rk3588	rk3588-cyber-aib.dtb	rockchip-rk3588	OK
+easepi-r2	EasePi-R2	rk3588	rk3588-easepi-r2.dtb	rockchip-rk3588	OK
+firefly-itx-3588j	ITX-3588J	rk3588	rk3588-firefly-itx-3588j.dtb	rockchip-rk3588	OK
+fxblox-rk1	FxBlox RK1	rk3588	rk3588-fxblox-rk1.dtb	rockchip-rk3588	OK
+hinlink-h88k	H88K	rk3588	rk3588-hinlink-h88k.dtb	rockchip-rk3588	OK
+imb3588	IMB3588	rk3588	rk3588-yx-imb3588.dtb	rockchip-rk3588	OK
+lubancat-5io	LubanCat 5IO	rk3588	rk3588-lubancat-5io.dtb	rockchip-rk3588	OK
+orangepi5-max	Orange Pi 5 Max	rk3588	rk3588-orangepi-5-max.dtb	rockchip-rk3588	OK
+orangepi5-plus	Orange Pi 5+	rk3588	rk3588-orangepi-5-plus.dtb	rockchip-rk3588	OK
+orangepi5-ultra	Orange Pi 5 Ultra	rk3588	rk3588-orangepi-5-ultra.dtb	rockchip-rk3588	OK
+recomputer-rk3588-devkit	reComputer RK3588	rk3588	rk3588-recomputer-rk3588-devkit.dtb	rockchip-rk3588	OK
+rock-5-itx	Rock 5 ITX	rk3588	rk3588-rock-5-itx.dtb	rockchip-rk3588	OK
+rock-5b	Rock 5B	rk3588	rk3588-rock-5b.dtb	rockchip-rk3588	OK
+rock-5b-plus	Rock 5B+	rk3588	rk3588-rock-5b-plus.dtb	rockchip-rk3588	OK
+rock-5t	Rock 5T	rk3588	rk3588-rock-5t.dtb	rockchip-rk3588	OK
+turing-rk1	Turing RK1	rk3588	rk3588-turing-rk1.dtb	rockchip-rk3588	OK
+youyeetoo-yy3588	YY3588	rk3588	rk3588-youyeetoo-yy3588.dtb	rockchip-rk3588	OK
+armsom-cm7s-io	CM7s IO	rk3588s	rk3588s-armsom-cm7s-io.dtb	rockchip-rk3588	OK
+lubancat-4	LubanCat 4	rk3588s	rk3588s-lubancat-4.dtb	rockchip-rk3588	OK
+orangepi-cm5	OrangePi CM5	rk3588s	rk3588s-orangepi-cm5.dtb	rockchip-rk3588	OK
+orangepi5	Orange Pi 5	rk3588s	rk3588s-orangepi-5.dtb	rockchip-rk3588	OK
+orangepi5b	Orange Pi 5B	rk3588s	rk3588s-orangepi-5b.dtb	rockchip-rk3588	OK
+orangepi5pro	Orange Pi 5 Pro	rk3588s	rk3588s-orangepi-5-pro.dtb	rockchip-rk3588	OK
+radxa-cm5-io	CM5 IO	rk3588s	rk3588s-radxa-cm5-io.dtb	rockchip-rk3588	OK
+radxa-e52c	E52C	rk3588s	rk3588s-radxa-e52c.dtb	rockchip-rk3588	OK
+radxa-e54c	E54C	rk3588s	rk3588s-radxa-e54c.dtb	rockchip-rk3588	OK
+retro-lite-cm5	Retro Lite CM5	rk3588s	rk3588s-retro-lite-cm5.dtb	rockchip-rk3588	OK
+rock-5-cm-rpi-cm4-io	CM5 on RPi CM4 IO	rk3588s	rk3588s-radxa-cm5-rpi-cm4-io.dtb	rockchip-rk3588	OK
+rock-5-cmio	CM5	rk3588s	rk3588s-radxa-cm5-io.dtb	rockchip-rk3588	OK
+rock-5a	Rock 5A	rk3588s	rk3588s-rock-5a.dtb	rockchip-rk3588	OK
+rock-5c	Rock 5C	rk3588s	rk3588s-rock-5c.dtb	rockchip-rk3588	OK
+station-m3	Station M3	rk3588s	rk3588s-roc-pc.dtb	rockchip-rk3588	OK
+youyeetoo-r1-v3	R1 v3	rk3588s	rk3588s-youyeetoo-r1.dtb	rockchip-rk3588	OK
