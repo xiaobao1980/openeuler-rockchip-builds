@@ -178,8 +178,24 @@ jobs:
           bash scripts/board-resolve.sh "$BOARD" > /tmp/board.conf
           # shellcheck disable=SC1091
           . /tmp/board.conf
+
+          # boot 资产 Release 用前缀发现，不拼死 tag。
+          # 原因：KERNEL_VER 在 board.conf 里只是模板默认值（6.1.172），板上或官方
+          # 镜像实际跑的可能是 6.1.115；拼死 tag 会对不上，而下载后 build-image.sh
+          # 本来就会以内核版本以资产为准自动纠正。所以只要「该板有 boot 资产」就够。
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                --jq '.[].tagName' | grep -E "^boot-${BOARD}-" | head -1 || true)
+          if [ -z "$TAG" ]; then
+            AVAIL=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                    --jq '.[].tagName' | grep -E '^boot-' | tr '\n' ' ' || true)
+            echo "::error::$BOARD 还没有 boot 资产 Release（期望 boot-${BOARD}-*）。"
+            echo "::error::先跑 publish-boot-assets.yml，或在板上执行 sudo BOARD=$BOARD ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0"
+            echo "::error::本仓库现有 boot 资产：${AVAIL:-（无）}"
+            exit 1
+          fi
+          echo "boot 资产 Release：$TAG"
           echo "kver=$KERNEL_VER" >> "$GITHUB_OUTPUT"
-          echo "tag=$BOOT_ASSETS_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prefix=$IMG_PREFIX" >> "$GITHUB_OUTPUT"
           echo "soc=$FAMILY" >> "$GITHUB_OUTPUT"
           echo "dtb=$DTB" >> "$GITHUB_OUTPUT"
@@ -190,7 +206,8 @@ jobs:
             echo "|---|---|"
             echo "| SoC | $FAMILY |"
             echo "| DTB | \`$DTB\` |"
-            echo "| 内核 | \`$KERNEL_VER\` |"
+            echo "| 内核（board.conf） | \`$KERNEL_VER\`（实际以 boot 资产为准） |"
+            echo "| boot 资产 | \`$TAG\` |"
             echo "| CMA | ${CMA_OVERRIDE:-$CMA} |"
             echo "| SELinux | ${SELINUX_MODE} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -200,12 +217,8 @@ jobs:
           set -euo pipefail
           mkdir -p in
           TAG="${{ steps.cfg.outputs.tag }}"
-          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-                 --pattern 'boot-*.tar.zst*' --dir in 2>/dev/null; then
-            echo "::error::本仓库没有 Release '$TAG'。先跑一次 publish-boot-assets.yml 产出该板的 boot 资产。"
-            echo "::error::或用本机 sudo BOARD=$BOARD ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0 打包后 gh release upload。"
-            exit 1
-          fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'boot-*.tar.zst*' --dir in
           ls -lh in/
           TAR=$(ls in/boot-*.tar.zst | head -1)
           if [ -f "$TAR.sha256" ]; then ( cd in && sha256sum -c "$(basename "$TAR").sha256" ); fi
@@ -236,7 +249,12 @@ jobs:
         run: |
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
-          NAME="openEuler-${OE_VER}-${BOARD}-$(. /tmp/board.conf && echo "${KERNEL_VER%%-*}")-${DATE}.img"
+          # 真实内核版本取自 build-image.sh 落盘的 resolved conf —— 它会以 boot 资产
+          # 里的 lib/modules 为准纠正 board.conf 的模板默认值，产物名必须跟着它走
+          KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
+          echo "实际内核: $KVER"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          NAME="openEuler-${OE_VER}-${BOARD}-${KVER%%-*}-${DATE}.img"
           mv out.img "$NAME"
           echo "大小: $(du -h "$NAME" | cut -f1)"
           xz -T0 -6 "$NAME"
@@ -264,7 +282,7 @@ jobs:
             gh release create "$TAG" ./*.img.xz ./*.sha256 \
               --repo "$GITHUB_REPOSITORY" \
               --title "openEuler ${OE_VER} ${BOARD} ${DATE} #${GITHUB_RUN_NUMBER}" \
-              --notes "openEuler ${OE_VER} 用户态 + Armbian vendor 内核（$(. /tmp/board.conf && echo "$KERNEL_VER")）
+              --notes "openEuler ${OE_VER} 用户态 + Armbian vendor 内核（${{ steps.pack.outputs.kver }}）
           板卡：\`${BOARD}\`   SoC：${{ steps.cfg.outputs.soc }}   DTB：\`${{ steps.cfg.outputs.dtb }}\`
           SELinux：${SELINUX_MODE}   CMA：${CMA_OVERRIDE:-auto}
 

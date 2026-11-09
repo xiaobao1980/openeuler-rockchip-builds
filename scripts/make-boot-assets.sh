@@ -85,7 +85,20 @@ fi
 # --- 2. 抄出 Image / dtb / modules / extlinux.conf -------------------------
 log "抄出内核与模块（$KERNEL_VER）"
 [ -f "$SYSROOT/boot/Image" ] || die "$SYSROOT/boot/Image 不存在 — 不是 Armbian 镜像？"
-[ -d "$SYSROOT/lib/modules/$KERNEL_VER" ] || die "$SYSROOT/lib/modules/$KERNEL_VER 不存在 — 板上实际内核版本是：$(ls "$SYSROOT/lib/modules")"
+
+# 内核版本以镜像实际内容为准：board.conf 里的 6.1.172 只是模板默认值，
+# Armbian 官方镜像可能是 6.1.115 / 6.1.x 其它小版本。只有一个模块目录时直接采用，
+# 省掉每次手工传 kver_override（也能保证 Release tag 与真实内核一致）。
+if [ ! -d "$SYSROOT/lib/modules/$KERNEL_VER" ]; then
+  _n=$(find "$SYSROOT/lib/modules" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$_n" = 1 ]; then
+    _kv=$(find "$SYSROOT/lib/modules" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)
+    printf '\033[1;33m    注意：%s 不存在，以镜像实际内核 %s 为准\033[0m\n' "$KERNEL_VER" "$_kv"
+    KERNEL_VER=$_kv
+  else
+    die "$SYSROOT/lib/modules/$KERNEL_VER 不存在。镜像里实际有：$(ls "$SYSROOT/lib/modules" | tr '\n' ' ')— 用 KERNEL_VER 或 workflow 的 kver_override 指定"
+  fi
+fi
 
 B="$OUT_DIR/stage/boot"
 rm -rf "$B"; mkdir -p "$B/boot/dtb/rockchip" "$B/boot/extlinux" "$B/lib/modules"
@@ -94,7 +107,18 @@ cp -a "$SYSROOT/boot/Image" "$B/boot/"
 for d in "$SYSROOT/boot/dtb/rockchip/$DTB" "$SYSROOT/boot/dtb/$DTB" "$SYSROOT/boot/$DTB"; do
   [ -f "$d" ] && { cp -a "$d" "$B/boot/dtb/rockchip/"; break; }
 done
-[ -f "$B/boot/dtb/rockchip/$DTB" ] || die "找不到 $DTB"
+# 上游个别板（BOOT_FDT_FILE 走 fdtdir）推导出的名字与镜像里实际文件名不同；
+# 只有一个 dtb 时直接采用，不让名字差异卡住整个流程
+if [ ! -f "$B/boot/dtb/rockchip/$DTB" ] && [ -d "$SYSROOT/boot/dtb/rockchip" ]; then
+  _n=$(find "$SYSROOT/boot/dtb/rockchip" -maxdepth 1 -name '*.dtb' | wc -l | tr -d ' ')
+  if [ "$_n" = 1 ]; then
+    _d=$(find "$SYSROOT/boot/dtb/rockchip" -maxdepth 1 -name '*.dtb' -exec basename {} \;)
+    printf '\033[1;33m    注意：%s 不存在，采用镜像里唯一的 %s\033[0m\n' "$DTB" "$_d"
+    DTB=$_d
+    cp -a "$SYSROOT/boot/dtb/rockchip/$DTB" "$B/boot/dtb/rockchip/"
+  fi
+fi
+[ -f "$B/boot/dtb/rockchip/$DTB" ] || die "找不到 $DTB（$SYSROOT/boot/dtb/rockchip 里有：$(ls "$SYSROOT/boot/dtb/rockchip" 2>/dev/null | head -5 | tr '\n' ' ')）"
 cp -a "$SYSROOT/lib/modules/$KERNEL_VER" "$B/lib/modules/"
 [ -f "$SYSROOT/boot/extlinux/extlinux.conf" ] && cp -a "$SYSROOT/boot/extlinux/extlinux.conf" "$B/boot/extlinux/"
 # 顺手把原 cmdline 存一份，构建时按它改写（不自己凭空捏 root=/console=）

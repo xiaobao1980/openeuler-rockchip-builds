@@ -68,9 +68,34 @@ log "解包 boot 资产"
 rm -rf "$WORK/ba"; mkdir -p "$WORK/ba"
 tar -I zstd -xf "$BOOT_TAR" -C "$WORK/ba"
 BA="$WORK/ba"
+
+# --- 内核版本以 boot 资产为准 -----------------------------------------------
+# board.conf 里的 KERNEL_VER 只是模板默认值（6.1.172），而板上/官方镜像里实际跑的
+# 可能是 6.1.115、6.1.172 等不同小版本。资产里有且只有一个 lib/modules/<ver>，
+# 那才是必须一字不差用在 depmod 和 /lib/modules 上的值。
+if [ -d "$BA/lib/modules" ]; then
+  _kv=$(find "$BA/lib/modules" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | head -1)
+  if [ -n "$_kv" ] && [ "$_kv" != "$KERNEL_VER" ]; then
+    info "⚠ 内核版本以资产为准：$KERNEL_VER → $_kv"
+    KERNEL_VER=$_kv
+  fi
+fi
+
+# --- DTB 名也以资产为准 -----------------------------------------------------
+# 上游 96 块板里，board.conf 推导出的 dtb 名来自 BOOT_FDT_FILE，个别板（走 fdtdir）
+# 与镜像里实际文件名不一致。资产里只有一个 dtb 时直接采用，避免无谓失败。
+if [ ! -f "$BA/boot/dtb/rockchip/$DTB" ] && [ -d "$BA/boot/dtb/rockchip" ]; then
+  _n=$(find "$BA/boot/dtb/rockchip" -maxdepth 1 -name '*.dtb' | wc -l | tr -d ' ')
+  if [ "$_n" = 1 ]; then
+    _d=$(find "$BA/boot/dtb/rockchip" -maxdepth 1 -name '*.dtb' -exec basename {} \;)
+    info "⚠ DTB 以资产为准：$DTB → $_d"
+    DTB=$_d
+  fi
+fi
+
 [ -f "$BA/bootloader-16M.bin" ] || die "boot 资产缺 bootloader-16M.bin"
 [ -f "$BA/boot/Image" ]         || die "boot 资产缺 boot/Image"
-[ -d "$BA/lib/modules/$KERNEL_VER" ] || die "boot 资产缺 lib/modules/$KERNEL_VER"
+[ -d "$BA/lib/modules/$KERNEL_VER" ] || die "boot 资产缺 lib/modules/$KERNEL_VER（资产里只有：$(ls "$BA/lib/modules" 2>/dev/null | tr '\n' ' ')）"
 BSZ=$(stat -c %s "$BA/bootloader-16M.bin")
 [ "$BSZ" -eq "$BOOTLOADER_BYTES" ] || die "bootloader 区大小 $BSZ != $BOOTLOADER_BYTES"
 info "Image     : $(du -h "$BA/boot/Image" | cut -f1)"

@@ -128,14 +128,18 @@ jobs:
             exit 0
           fi
           echo "下载 $URL"
-          # 必须保留真实扩展名：make-boot-assets.sh 靠 *.xz 后缀判断要不要解压，
-          # 存成 in/armbian.img 会把 xz 压缩流当裸镜像去 dd
-          OUT="in/$(basename "${URL%%\?*}")"
+          # 先解析最终地址再定文件名：dl.armbian.com/<board>/<variant> 这类短链没有
+          # 扩展名，而 make-boot-assets.sh 靠 *.xz 后缀判断要不要解压 —— 存错名字会把
+          # xz 压缩流当裸镜像去 dd，结果是「镜像里找不到 ext4 分区」这种莫名其妙的错
+          FINAL=$(curl -sSL -o /dev/null -w '%{url_effective}' --max-time 60 -r 0-0 "$URL" 2>/dev/null || echo "$URL")
+          echo "最终地址: $FINAL"
+          OUT="in/$(basename "${FINAL%%\?*}")"
           case "$OUT" in
             *.img|*.img.xz) ;;
-            *) echo "::error::image_url 需以 .img 或 .img.xz 结尾（当前: $OUT）"; exit 1 ;;
+            *) echo "::error::无法从 URL 推断镜像文件名（得到 '$OUT'）。请直接给带 .img / .img.xz 后缀的直链。"; exit 1 ;;
           esac
           curl -fL --retry 3 --retry-delay 5 -o "$OUT" "$URL"
+          echo "落盘: $OUT ($(du -h "$OUT" | cut -f1))"
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
 
       - name: 抽取 boot 资产
@@ -148,22 +152,27 @@ jobs:
       - name: 发布到 Release
         run: |
           set -euo pipefail
-          TAG="${{ steps.cfg.outputs.tag }}"
           TAR=$(ls out/boot-*.tar.zst | head -1)
+          # tag 取自产物文件名 boot-<board>-<kver>，不在这里拼 KERNEL_VER：
+          # 它可能只是模板默认值，而 make-boot-assets.sh 会以镜像里实际的
+          # lib/modules 为准纠正。tag 必须与真实内核一致，否则下游发现到的资产名会骗人。
+          TAG=$(basename "$TAR" .tar.zst)
+          KVER="${TAG#boot-${BOARD}-}"
+          echo "tag=$TAG  kver=$KVER"
           NOTES="板卡 \`${BOARD}\`（${{ steps.cfg.outputs.model }}）的已验证 boot 资产。
 
           - SoC：\`$(. /tmp/board.conf && echo "$FAMILY")\`
-          - 内核：\`${{ steps.cfg.outputs.kver }}\`
+          - 内核：\`${KVER}\`
           - DTB：\`${{ steps.cfg.outputs.dtb }}\`
           - 来源：${{ inputs.image_url || inputs.armbian_repo }}
 
           内容：前 16 MiB bootloader 区（idbloader + u-boot.itb + GPT）、\`/boot/Image\`、
-          \`/boot/dtb/rockchip/*.dtb\`、\`/lib/modules/${{ steps.cfg.outputs.kver }}\`、原 \`extlinux.conf\`。
+          \`/boot/dtb/rockchip/*.dtb\`、\`/lib/modules/${KVER}\`、原 \`extlinux.conf\`。
           消费方式：build-openeuler.yml 的 board 输入填 \`${BOARD}\` 即可。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" \
-              --title "boot assets ${BOARD} ${{ steps.cfg.outputs.kver }}" --notes "$NOTES"
+              --title "boot assets ${BOARD} ${KVER}" --notes "$NOTES"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
