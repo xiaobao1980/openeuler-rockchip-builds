@@ -24,6 +24,10 @@ IMG="${1:?缺镜像路径}"
 # 与 build-image.sh 保持一致的覆盖规则（独立运行时也不会误报）
 CMA="${CMA_OVERRIDE:-$CMA}"
 SELINUX="${SELINUX_MODE:-$SELINUX}"
+case "${ROOT_PARTUUID:-}" in
+  ????????-????-????-????-????????????) ;;
+  *) echo "ERROR: 板级配置缺合法的 ROOT_PARTUUID（当前：${ROOT_PARTUUID:-<空>}）" >&2; exit 1 ;;
+esac
 MP=$(mktemp -d); LOOP=""
 cleanup() { set +e; umount "$MP" 2>/dev/null; [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; rmdir "$MP" 2>/dev/null; }
 trap cleanup EXIT
@@ -42,12 +46,21 @@ chk "GPT 有效 (sgdisk -v)"            "sgdisk -v '$IMG' | grep -q 'No problems
 FIRST=$(sgdisk -i 1 "$IMG" 2>/dev/null | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p')
 chk "分区 1 起点 = LBA $PART_START_LBA (实为 ${FIRST:-?})" "[ '${FIRST:-0}' = '$PART_START_LBA' ]"
 chk "idbloader 区非空 (LBA 64 起)"      "dd if='$IMG' bs=512 skip=64 count=8 status=none | tr -d '\0' | grep -q ."
+# 直接从镜像文件里的 GPT 分区项读 GUID —— 不依赖 loop 分区的 udev 元数据
+GPT_PARTUUID=$(sgdisk -i 1 "$IMG" 2>/dev/null | sed -n 's/^Partition unique GUID: //p' | tr 'A-Z' 'a-z')
 
 # --- 文件系统 -------------------------------------------------------------
 LOOP=$(losetup --find --show --partscan "$IMG") || { bad "loop 挂载失败"; exit 1; }
 P1="${LOOP}p1"
 chk "分区 1 文件系统 = ext4"           "[ \"\$(blkid -o value -s TYPE '$P1')\" = ext4 ]"
 chk "文件系统 UUID = $ROOT_UUID"        "[ \"\$(blkid -o value -s UUID '$P1')\" = '$ROOT_UUID' ]"
+# 分区 GUID 是内核 cmdline root=PARTUUID= 唯一能查的东西（坑 #19）。
+# sgdisk 从镜像文件的 GPT 表读，最权威；blkid/lsblk 再交叉验证一次。
+chk "GPT 分区项 GUID = $ROOT_PARTUUID"  "[ '${GPT_PARTUUID:-}' = '$ROOT_PARTUUID' ]"
+P1_PARTUUID=$(blkid -o value -s PARTUUID "$P1" 2>/dev/null | tr 'A-Z' 'a-z')
+[ -n "$P1_PARTUUID" ] || P1_PARTUUID=$(lsblk -no PARTUUID "$P1" 2>/dev/null | awk 'NR==1')
+[ -n "$P1_PARTUUID" ] || P1_PARTUUID="${GPT_PARTUUID:-}"   # loop 设备上 udev 可能未填充
+chk "分区设备可见 PARTUUID 一致"        "[ '$P1_PARTUUID' = '$ROOT_PARTUUID' ]"
 mount -o ro "$P1" "$MP" || { bad "挂载 $P1 失败"; exit 1; }
 
 echo "-- 系统身份"
@@ -66,7 +79,15 @@ chk "无 openEuler 自带 vmlinuz 残留"    "! ls '$MP'/boot/vmlinuz* >/dev/nul
 echo "-- 引导配置"
 CONF="$MP/boot/extlinux/extlinux.conf"
 chk "extlinux.conf 存在"                "[ -f '$CONF' ]"
-chk "cmdline 含 root=UUID=$ROOT_UUID"    "grep -q 'root=UUID=$ROOT_UUID' '$CONF'"
+# 真机教训（坑 #19）：无 initrd 时内核 name_to_dev_t() 不认 root=UUID=，
+# 日志只会停在 `Waiting for root device UUID=...` 且不报错、不 panic，极难自查。
+chk "cmdline 含 root=PARTUUID=$ROOT_PARTUUID" "grep -q 'root=PARTUUID=$ROOT_PARTUUID' '$CONF'"
+chk "cmdline 不含 root=UUID=（内核不解析）"  "! grep -q 'root=UUID=' '$CONF'"
+chk "cmdline 含 rootfstype=ext4"        "grep -q 'rootfstype=ext4' '$CONF'"
+# 闭环：把 conf 里的值反解出来，跟分区表实测值比。这样以后谁把 cmdline 改回
+# UUID=、或改了 GUID 忘了同步 sgdisk，静态校验当场就会拦下来。
+CONF_PARTUUID=$(sed -nE 's/.*root=PARTUUID=([^ ]+).*/\1/p' "$CONF" | awk 'NR==1')
+chk "conf PARTUUID ↔ GPT 分区项一致"    "[ -n '$CONF_PARTUUID' ] && [ '$CONF_PARTUUID' = '${GPT_PARTUUID:-}' ] && [ '$CONF_PARTUUID' = '$ROOT_PARTUUID' ]"
 chk "cmdline 含 cma=$CMA"               "grep -q 'cma=$CMA' '$CONF'"
 chk "cmdline 含 selinux=$SELINUX"        "grep -q 'selinux=$SELINUX' '$CONF'"
 chk "cmdline 未引用 initrd"             "! grep -qE '^[[:space:]]*(initrd|fdtdir)' '$CONF'"

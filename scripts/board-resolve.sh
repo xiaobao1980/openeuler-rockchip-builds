@@ -60,6 +60,10 @@ _sum() {
 }
 H=$(_sum "openeuler-rk35xx/$id")
 ROOT_UUID="${H:0:8}-${H:8:4}-4${H:13:3}-a${H:17:3}-${H:20:12}"
+# GPT 分区项 GUID：换个 salt，保证与文件系统 UUID 不同（两者是不同字段，混用会
+# 让 root=PARTUUID= 找不到分区）。内核 cmdline 必须用它，见坑 #19。
+HP=$(_sum "openeuler-rk35xx/partuuid/$id")
+PART_UUID="${HP:0:8}-${HP:8:4}-4${HP:13:3}-a${HP:17:3}-${HP:20:12}"
 
 # CMA 按 SoC 给经验值：小内存 SoC 给多了会挤压系统
 case "$soc" in
@@ -74,6 +78,7 @@ sed -e "s|^BOARD_ID=.*|BOARD_ID=$id|" \
     -e "s|^FAMILY=[^ ]*|FAMILY=$soc|" \
     -e "s|^DTB=[^ ]*|DTB=$dtb|" \
     -e "s|^ROOT_UUID=[^ ]*|ROOT_UUID=$ROOT_UUID|" \
+    -e "s|^ROOT_PARTUUID=[^ ]*|ROOT_PARTUUID=$PART_UUID|" \
     -e "s|^CMA=[^ ]*|CMA=$CMA|" \
     -e "s|^# AUTO-GENERATED.*|# AUTO-GENERATED from boards/boards.tsv (soc=$soc, family=$family)|" \
     "$TPL"

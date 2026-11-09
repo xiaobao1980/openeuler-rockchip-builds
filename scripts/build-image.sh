@@ -51,6 +51,14 @@ die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(uname -m)" = aarch64 ] || die "必须 aarch64（depmod 要原生跑）。当前 $(uname -m)。"
 
+# 无 initrd 的内核只认 root=PARTUUID= / PARTLABEL= / /dev/xxx，不认 root=UUID=
+# （文件系统 UUID 是 initramfs 里 udev/blkid 解析的）。所以 GPT 分区 GUID 必须
+# 显式固定，且不能与文件系统 UUID 混为一谈。缺了就立刻停，别做出起不来的镜像。
+case "${ROOT_PARTUUID:-}" in
+  ????????-????-????-????-????????????) ;;
+  *) die "板级配置缺合法的 ROOT_PARTUUID（当前：${ROOT_PARTUUID:-<空>}）。见 boards/_template/board.conf 坑 #19" ;;
+esac
+
 mkdir -p "$WORK"
 R="$WORK/rootfs"
 MNT_OE="$WORK/mnt-oe"
@@ -190,27 +198,33 @@ info "已装 /boot/Image、/boot/dtb/rockchip/$DTB、/lib/modules/$KERNEL_VER"
 # ---------------------------------------------------------------------------
 # 4. extlinux.conf —— cmdline 优先继承板上原文件，路径一律按本镜像布局重写
 # ---------------------------------------------------------------------------
-# 真机教训（H96 MAX M9 / U-Boot 2017.09_armbian）：该 Armbian 镜像根本没有
+# 真机教训 1（坑 #18，U-Boot 2017.09_armbian）：该 Armbian 镜像根本没有
 # extlinux.conf，内置模板写的 `kernel /Image`、`fdt /dtb/rockchip/...` 是
-# 「相对 /boot」口径；vendor U-Boot 的 sysboot 却按分区根解析，实测日志：
-#   Retrieving file: /Image → ** File not found /Image **
-# 内核 /boot/Image 明明在卡上却加载不到，整条启动链停在 extlinux。
-# 本仓库把内核与 dtb 固定装在 /boot/ 下，故 kernel/fdt 必须自己重写，
-# 不能照抄原 conf 的相对路径；只继承 append（root=/console=/cma= 等）。
+# 「相对 /boot」口径；vendor U-Boot 的 sysboot 却按分区根解析 → /Image 找不到。
+# 本仓库把内核与 dtb 固定装在 /boot/ 下，故 kernel/fdt 必须自己重写，只继承 append。
+#
+# 真机教训 2（坑 #19，第二轮上板）：append 里的 `root=UUID=<文件系统UUID>` 让
+# 内核卡死在 `Waiting for root device UUID=...`。vendor 6.1 内核 init/do_mounts.c
+# 的 name_to_dev_t() 只接受 PARTUUID= / PARTLABEL= / /dev/xxx / 设备号，没有
+# UUID= 分支——文件系统 UUID 是 initramfs 里 udev/blkid 解析的，而我们按设计
+# 不装 initrd。上游 Armbian 的 boot-rk35xx.cmd 也用 PARTUUID=${partuuid} 做
+# rootdev，并明确警告硬编码 /dev/mmcblk0p1 会因 mmc 编号漂移指错设备。
+# 因此：固定 GPT 分区项 1 的 GUID，cmdline 用 root=PARTUUID= 指向它。
 log "生成 extlinux.conf"
 SRC_CONF="$BA/boot/extlinux/extlinux.conf"
 KL="  kernel /boot/Image"
 FL="  fdt /boot/dtb/rockchip/$DTB"
 if [ -f "$SRC_CONF" ]; then
   AP=$(grep -m1 -E '^[[:space:]]*append[[:space:]]' "$SRC_CONF" | sed -E 's/^[[:space:]]*append[[:space:]]+//' || true)
-  [ -n "$AP" ] || AP="root=UUID=$ROOT_UUID rootwait rw console=$CONSOLE"
+  [ -n "$AP" ] || AP="root=PARTUUID=$ROOT_PARTUUID rootwait rw rootfstype=ext4 console=$CONSOLE"
   info "继承板上原始 cmdline：$AP"
 else
-  AP="root=UUID=$ROOT_UUID rootwait rw console=$CONSOLE"
-  info "板上无 extlinux.conf，使用内置 cmdline（kernel/fdt 按 /boot 布局重写）"
+  AP="root=PARTUUID=$ROOT_PARTUUID rootwait rw rootfstype=ext4 console=$CONSOLE"
+  info "板上无 extlinux.conf，使用内置 cmdline（kernel/fdt/root 全部按本镜像重写）"
 fi
-# UUID 强制对齐；CMA / SELinux 缺失则补
-AP=$(printf '%s' "$AP" | sed -E "s#root=[^ ]+#root=UUID=$ROOT_UUID#")
+# root= 强制对齐到 GPT 分区 GUID；rootfstype 补上，省得内核逐个试文件系统
+AP=$(printf '%s' "$AP" | sed -E "s#root=[^ ]+#root=PARTUUID=$ROOT_PARTUUID#")
+case " $AP " in *" rootfstype="*) ;; *) AP="$AP rootfstype=ext4" ;; esac
 case " $AP " in *" cma="*) AP=$(printf '%s' "$AP" | sed -E "s#cma=[^ ]+#cma=$CMA#") ;; *) AP="$AP cma=$CMA" ;; esac
 case " $AP " in *" selinux="*) AP=$(printf '%s' "$AP" | sed -E "s#selinux=[^ ]+#selinux=$SELINUX#") ;; *) AP="$AP selinux=$SELINUX" ;; esac
 case " $AP " in *cgroup_enable=*) ;; *) AP="$AP cgroup_enable=memory" ;; esac
@@ -238,6 +252,8 @@ rm -f "$R/boot/initrd"* "$R/boot/uInitrd"* 2>/dev/null || true
 # 5. fstab —— 官方 qcow2 的条目（/boot、/boot/efi、xfs 根）会直接进 emergency
 # ---------------------------------------------------------------------------
 log "重写 /etc/fstab"
+# 注意：fstab 用文件系统 UUID（用户态 blkid/udev 解析，没问题），
+# cmdline 用分区 GUID（内核自己解析，无 initrd 时唯一可行）。两者指向同一分区。
 cat > "$R/etc/fstab" <<EOF
 UUID=$ROOT_UUID  /      ext4  defaults,noatime,errors=remount-ro  0 1
 tmpfs            /tmp   tmpfs defaults,nosuid,nodev,size=2G       0 0
@@ -366,7 +382,14 @@ log "修正 GPT 分区表"
 sgdisk -d 1 "$OUT_IMG" >/dev/null
 sgdisk -n "1:${PART_START_LBA}:0" -t 1:8300 -c "1:${ROOT_LABEL}" "$OUT_IMG" >/dev/null
 sgdisk -e "$OUT_IMG" >/dev/null 2>&1 || true
+# -n 会生成**随机**分区 GUID；必须显式覆盖成 ROOT_PARTUUID，否则 extlinux.conf
+# 里写死的 root=PARTUUID= 找不到分区，内核又会在 `Waiting for root device` 死等。
+# 放在 -e（重定位 backup GPT）之后再设，避免后续操作改写分区项。
+sgdisk -u "1:${ROOT_PARTUUID}" "$OUT_IMG" >/dev/null
+ACTUAL_PU=$(sgdisk -i 1 "$OUT_IMG" | sed -n 's/^Partition unique GUID: //p' | tr 'A-Z' 'a-z')
+[ "$ACTUAL_PU" = "$ROOT_PARTUUID" ] || die "分区 GUID 写入失败：期望 $ROOT_PARTUUID，实为 ${ACTUAL_PU:-<空>}"
 sgdisk -v "$OUT_IMG" | tail -3
+info "分区 1 PARTUUID = $ROOT_PARTUUID（cmdline root=PARTUUID= 指向它）"
 # 注意不能用 awk -F: '{print $2}' —— sgdisk 输出是 "First sector: 32768 (at 16.0 MiB)"，
 # 去空格后会变成 "32768(at16.0MiB)"，拿去做算术直接报错
 info "分区 1 起点 LBA $(sgdisk -i 1 "$OUT_IMG" | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p')"
@@ -389,6 +412,7 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "BOOTLOADER_BYTES=$BOOTLOADER_BYTES"
   echo "CONSOLE=$CONSOLE"
   echo "ROOT_UUID=$ROOT_UUID"
+  echo "ROOT_PARTUUID=$ROOT_PARTUUID"
   echo "ROOT_LABEL=$ROOT_LABEL"
   echo "SLACK_PCT=$SLACK_PCT"
   echo "CMA=$CMA"
