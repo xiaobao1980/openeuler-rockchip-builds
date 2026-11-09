@@ -128,8 +128,15 @@ jobs:
             exit 0
           fi
           echo "下载 $URL"
-          curl -fL --retry 3 -o in/armbian.img "${URL}"
-          echo "file=in/armbian.img" >> "$GITHUB_OUTPUT"
+          # 必须保留真实扩展名：make-boot-assets.sh 靠 *.xz 后缀判断要不要解压，
+          # 存成 in/armbian.img 会把 xz 压缩流当裸镜像去 dd
+          OUT="in/$(basename "${URL%%\?*}")"
+          case "$OUT" in
+            *.img|*.img.xz) ;;
+            *) echo "::error::image_url 需以 .img 或 .img.xz 结尾（当前: $OUT）"; exit 1 ;;
+          esac
+          curl -fL --retry 3 --retry-delay 5 -o "$OUT" "$URL"
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
 
       - name: 抽取 boot 资产
         run: |
@@ -157,6 +164,6 @@ jobs:
             gh release upload "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" \
-              --title "boot assets ${BOARD} ${KERNEL_VER:-}" --notes "$NOTES"
+              --title "boot assets ${BOARD} ${{ steps.cfg.outputs.kver }}" --notes "$NOTES"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

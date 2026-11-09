@@ -35,6 +35,12 @@ OUT_IMG="${3:?缺输出镜像路径}"
 WORK="${WORK:-$HERE/../work}"
 ROOT_PW="${ROOT_PW:-openeuler}"
 
+# --- CI 覆盖：workflow 的 inputs 落到 board.conf 推导出来的默认值上 -----------
+# 不在这里合并的话，workflow 里选 selinux=permissive 会被 board.conf 的 disabled 静默吃掉
+CMA="${CMA_OVERRIDE:-$CMA}"
+SELINUX="${SELINUX_MODE:-$SELINUX}"
+OE_VERSION="${OE_VER:-$OE_VERSION}"
+
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -269,11 +275,32 @@ sgdisk -d 1 "$OUT_IMG" >/dev/null
 sgdisk -n "1:${PART_START_LBA}:0" -t 1:8300 -c "1:${ROOT_LABEL}" "$OUT_IMG" >/dev/null
 sgdisk -e "$OUT_IMG" >/dev/null 2>&1 || true
 sgdisk -v "$OUT_IMG" | tail -3
-info "分区 1 起点 LBA $(sgdisk -i 1 "$OUT_IMG" | awk -F: '/First sector/{gsub(/ /,"",$2);print $2}')"
+# 注意不能用 awk -F: '{print $2}' —— sgdisk 输出是 "First sector: 32768 (at 16.0 MiB)"，
+# 去空格后会变成 "32768(at16.0MiB)"，拿去做算术直接报错
+info "分区 1 起点 LBA $(sgdisk -i 1 "$OUT_IMG" | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p')"
 
 # ---------------------------------------------------------------------------
 # 10. 校验
 # ---------------------------------------------------------------------------
 log "校验"
-bash "$HERE/verify-image.sh" "$OUT_IMG"
+# 把本次真正生效的值固化成一份 conf 交给校验脚本。
+# 不这么做的话 verify 会重新跑 board-resolve，把 PART_START_LBA 拿回配置里的兜底值、
+# 把 CMA/SELINUX 拿回模板默认值 —— 上面做的实测与 CI 覆盖全都白做，校验误报失败。
+RESOLVED="$WORK/board.resolved.conf"
+{
+  echo "BOARD_ID=$BOARD_ID"
+  echo "MODEL=\"$MODEL\""
+  echo "FAMILY=$FAMILY"
+  echo "KERNEL_VER=$KERNEL_VER"
+  echo "DTB=$DTB"
+  echo "PART_START_LBA=$PART_START_LBA"
+  echo "BOOTLOADER_BYTES=$BOOTLOADER_BYTES"
+  echo "CONSOLE=$CONSOLE"
+  echo "ROOT_UUID=$ROOT_UUID"
+  echo "ROOT_LABEL=$ROOT_LABEL"
+  echo "SLACK_PCT=$SLACK_PCT"
+  echo "CMA=$CMA"
+  echo "SELINUX=$SELINUX"
+} > "$RESOLVED"
+BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
 log "完成：$OUT_IMG ($(du -h "$OUT_IMG" | cut -f1))"

@@ -20,6 +20,10 @@ else
 fi
 
 IMG="${1:?缺镜像路径}"
+
+# 与 build-image.sh 保持一致的覆盖规则（独立运行时也不会误报）
+CMA="${CMA_OVERRIDE:-$CMA}"
+SELINUX="${SELINUX_MODE:-$SELINUX}"
 MP=$(mktemp -d); LOOP=""
 cleanup() { set +e; umount "$MP" 2>/dev/null; [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; rmdir "$MP" 2>/dev/null; }
 trap cleanup EXIT
@@ -34,7 +38,8 @@ echo "== 镜像: $IMG ($(du -h "$IMG" | cut -f1)) =="
 # --- 分区表 ---------------------------------------------------------------
 echo "-- 引导与分区"
 chk "GPT 有效 (sgdisk -v)"            "sgdisk -v '$IMG' | grep -q 'No problems found'"
-FIRST=$(sgdisk -i 1 "$IMG" 2>/dev/null | awk -F: '/First sector/{gsub(/ /,"",$2);print $2}')
+# sgdisk 输出 "First sector: 32768 (at 16.0 MiB)"，只取前一个数字
+FIRST=$(sgdisk -i 1 "$IMG" 2>/dev/null | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p')
 chk "分区 1 起点 = LBA $PART_START_LBA (实为 ${FIRST:-?})" "[ '${FIRST:-0}' = '$PART_START_LBA' ]"
 chk "idbloader 区非空 (LBA 64 起)"      "dd if='$IMG' bs=512 skip=64 count=8 status=none | tr -d '\0' | grep -q ."
 

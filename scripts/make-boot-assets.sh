@@ -32,17 +32,16 @@ fi
 
 OUT_DIR="${OUT_DIR:-$HERE/../out}"
 MNT=$(mktemp -d)
+mkdir -p "$MNT/ro"   # mount 的挂载点必须已存在，否则 mount 直接失败
 LOOP=""
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 cleanup() {
   set +e
-  umount "$MNT/boot" 2>/dev/null
-  umount "$MNT/lib" 2>/dev/null
   umount "$MNT/ro" 2>/dev/null
   [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
-  rmdir "$MNT" 2>/dev/null
+  rmdir "$MNT/ro" "$MNT" 2>/dev/null
 }
 trap cleanup EXIT
 
