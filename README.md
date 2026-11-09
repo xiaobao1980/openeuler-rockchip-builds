@@ -187,6 +187,25 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosqui
 
 **Z2M 的构建产物判据容易写错**：`lib/` 顶层只有 `controller/eventBus/mqtt/state/zigbee.ts`，**没有 `index.ts`**；真正的入口是仓库根的 `index.js`（`package.json` 的 `main` 与 `scripts.start` 都是它），内部 `require("./dist/controller")`。`tsconfig` 只 `include ./lib/**`，所以 `tsc` 永远不会产出 `dist/index.js` —— 判 `dist/index.js` 会得到「构建成功但没有产物」的假象。正确判据是 `dist/controller.js`。
 
+### 账户与安全（B）
+
+刷出来的镜像默认只有 root 能登录。为降低风险，构建会自动再建一个**非 root 管理员账号**（默认 `openeuler`，用 `admin_user` 可改；r12 设为 `iot`），归入 `wheel` 并放行 `%wheel` sudo——**日常登这个、需要时才 sudo**。
+
+- 服务进程（nodered / mosquitto / zigbee2mqtt）本来就各自降权到独立系统用户，不跑 root；上面只是把「交互登录」也从 root 挪开。
+- `root_password` 仍生效（root 密码登录保留，方便 bring-up）；若要更硬，传 `ssh_pubkey` 即可让 root 只允许密钥登录、关闭密码（`PermitRootLogin prohibit-password` + `PasswordAuthentication no`）。
+- 不论哪种，上板后第一件事 `passwd`（以及 `passwd iot`）改掉默认 `openeuler` 弱密码。
+
+### Node-RED 扩展节点（A）
+
+`node_red_nodes` 输入传空格分隔的包名，构建时 `npm install` 进 `/var/lib/node-red`（userDir），**不污染全局**，刷新即自带：
+
+```bash
+gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosquitto \
+  -f node_red_nodes="node-red-contrib-zigbee2mqtt node-red-contrib-home-assistant-websocket node-red-contrib-tasmota node-red-dashboard node-red-node-ui-table node-red-contrib-ui-led"
+```
+
+r12 用的就是上面这组（zigbee2mqtt + HA + Tasmota 集成 + dashboard + ui-table/led）。不想预装也行——Node-RED 跑起来后直接在 Web 编辑器「管理面板 → 安装」里现装，效果一样。
+
 ---
 
 ## 目录结构
@@ -311,6 +330,21 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
     - `GPT:Primary header thinks Alt. header is not at the end of the disk. GPT:6531071 != 244285439`：镜像只占 3.2 G，刷到 116 GiB eMMC 后 backup GPT 仍在镜像末尾。非阻断——`block/partitions/efi.c` 在主 GPT 有效时照样注册 `p1` 并用 `unique_partition_guid` 填 `info->uuid`（这正是 `PARTUUID=` 能查到的前提）。刷完后 `sgdisk -e /dev/<卡>` 可消掉警告。
     - 板上实测 `printk: console [ttyFIQ0] enabled` / `Registered fiq debugger ttyFIQ0`，8250 只注册 `ttyS4`/`ttyS5`，**这支 vendor 内核没有 `ttyS2`**；内核日志靠 fiq_debugger 自己注册 console 才看得见。两轮日志都正常，故这一轮**不动 cmdline**（改错 baud 解析会连日志都丢）。进系统后若串口没有登录提示符：`systemctl enable --now serial-getty@ttyFIQ0.service`。
     - 原厂 `armbianEnv.txt` 与 `h96-m9.csc` 都是 `cma=512M`（4K60 VPU 解码缓冲需 ≥512M，8 GB 板推荐值），r10 只给了 256M。已对齐 `CMA=512M`，下一轮日志应出现 `cma: Reserved 512 MiB`。
+
+### #20 · Mosquitto exit-code 3：openEuler 的 mosquitto 未编 systemd journal 支持
+r11 上板后 Node-RED `:1880` 正常，但 `systemctl status mosquitto` → `failed (Result: exit-code) ... status=3` 反复重启。`ss` 没有 1883/8083。
+
+**根因**：`integrate-iot.sh` 的 Mosquitto 配置写了 `log_dest journal`。openEuler 24.03 的 `mosquitto-2.0.x` rpm 编译时**未带 `-DWITH_SYSTEMD=ON`**，遇到 `log_dest journal` 在配置解析阶段报 `Error: Unknown log type journal.` 并以 `exit 3` 退出，根本到不了监听。与 Node-RED 无关（Node-RED 不读这套 conf）。
+
+**修复**（commit `839a3bc` + `21009ac`）：`log_dest journal` → `log_dest stderr`（systemd 把 unit 的 stderr 接进 journal，日志不丢）；conf.d 写入前先 `rm -f *.conf` 清空，避免包自带 `default.conf`/`auth.conf` 被 `include_dir` 加载撞 `Duplicate value`。`verify-image.sh` 新增两条断言：conf.d 不得含 `log_dest journal`、必须含 `log_dest stderr`。
+
+**旧卡（r11）不重刷热修**：
+```bash
+ssh root@192.168.50.102
+sed -i 's/^log_dest journal/log_dest stderr/' /etc/mosquitto/conf.d/zigbee2mqtt.conf
+systemctl restart mosquitto
+ss -ltnp | grep -E '1883|8083'
+```
 
     **旧卡不重刷也能验证**（把卡挂到任意 Linux；等价于新镜像里的改动）：
     ```bash
