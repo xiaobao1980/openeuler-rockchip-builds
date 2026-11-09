@@ -430,7 +430,13 @@ setup_z2m() {
     tail -30 /tmp/iot-z2m-build.log >&2
     die "Z2M 构建失败"
   }
-  [ -f "$R/opt/zigbee2mqtt/dist/index.js" ] || die "构建后没有 dist/index.js"
+  # 注意：Z2M 的 lib/ 里没有 index.ts。仓库根的 index.js（package.json main/start）
+  # 才是不带扩展名的入口，它 require("./dist/controller")。所以 tsc 的产物是
+  # dist/controller.js —— 判 dist/index.js 会永远为假（踩过）。
+  if [ ! -f "$R/opt/zigbee2mqtt/dist/controller.js" ]; then
+    warn "dist 内容: $(ls "$R/opt/zigbee2mqtt/dist" 2>/dev/null | tr '\n' ' ')"
+    die "构建后没有 dist/controller.js（tsc 没产出？见 /tmp/iot-z2m-build.log）"
+  fi
 
   # 配置：协调器为空时写注释占位（首启手工填），不写死假地址
   mkdir -p "$R/opt/zigbee2mqtt/data" "$R/var/log/zigbee2mqtt"

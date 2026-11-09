@@ -12,6 +12,7 @@
 | boot 资产 | `boot-orangepi5-plus-6.1.115.tar.zst` 37 MiB（Image 45 M + modules 142 M + bootloader 16 MiB） |
 | 镜像构建 | `out.img` 2.8 G，`verify-image.sh` **21 项全过** |
 | 发布产物 | `openEuler-24.03-LTS-SP4-orangepi5-plus-6.1.115-20261109.img.xz` **704 MiB** |
+| 集成安装（IoT 栈） | 同板 + `node-red,mosquitto`：rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
 
 > 唯一未验证的是「刷到板上能不能起」—— 需要真机。所有静态校验都过了，但 U-Boot 是否走 extlinux 而非 `boot.scr`，只能上电才知道。
 

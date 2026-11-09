@@ -104,7 +104,8 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
   esac
   case ",${IOT_STACK:-}," in
     *",z2m,"*)
-      chk "z2m dist/index.js 已构建"          "[ -f '$MP/opt/zigbee2mqtt/dist/index.js' ]"
+      # 入口是仓库根 index.js，它 require ./dist/controller —— dist/index.js 不存在
+      chk "z2m dist/controller.js 已构建"      "[ -f '$MP/opt/zigbee2mqtt/dist/controller.js' ]"
       chk "z2m configuration.yaml"            "[ -f '$MP/opt/zigbee2mqtt/data/configuration.yaml' ]"
       chk "z2m 前端端口 ${IOT_Z2M_PORT:-8080}" "grep -q 'port: ${IOT_Z2M_PORT:-8080}' '$MP/opt/zigbee2mqtt/data/configuration.yaml'"
       chk "z2m 开机自启"                      "[ -L '$MP/etc/systemd/system/multi-user.target.wants/zigbee2mqtt.service' ]"
