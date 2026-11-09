@@ -294,6 +294,8 @@ if [ "$INTEGRATE" != "none" ]; then
     --adapter="${IOT_ADAPTER:-zstack}" \
     --node-version="${IOT_NODE_VERSION:-22}" \
     || die "集成安装失败"
+  # 先卸载再统计：/proc 还挂着时 du 会走进进程目录，刷一屏 "cannot access .../fd"
+  umount_chroot
   info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
 fi
 

@@ -91,8 +91,12 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
   esac
   case ",${IOT_STACK:-}," in
     *",node-red,"*)
-      chk "node 可执行"                      "[ -x '$MP/usr/local/bin/node' ]"
-      chk "node-red 可执行"                  "[ -x '$MP/usr/local/bin/node-red' ]"
+      # 不能测 $MP/usr/local/bin/node 的 -x：它是指向 /usr/local/lib/nodejs/... 的
+      # 绝对软链，挂载到 $MP 后解析到的是宿主机路径，必然不存在。要直接测真实文件。
+      chk "node 实体存在"                    "ls '$MP'/usr/local/lib/nodejs/*/bin/node >/dev/null 2>&1"
+      chk "node-red 实体存在"                "ls '$MP'/usr/local/lib/nodejs/*/bin/node-red >/dev/null 2>&1"
+      chk "/usr/local/bin/node 软链"         "[ -L '$MP/usr/local/bin/node' ]"
+      chk "/usr/local/bin/node-red 软链"     "[ -L '$MP/usr/local/bin/node-red' ]"
       chk "node-red.service 存在"            "[ -f '$MP/etc/systemd/system/node-red.service' ]"
       chk "node-red 开机自启"                "[ -L '$MP/etc/systemd/system/multi-user.target.wants/node-red.service' ]"
       chk "node-red 非 root 运行"            "grep -qE '^User=nodered' '$MP/etc/systemd/system/node-red.service'"
@@ -107,7 +111,8 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
       ;;
   esac
   chk "/etc/iot-stack.env 已写入"           "[ -f '$MP/etc/iot-stack.env' ]"
-  chk "无 dnf 缓存残留"                     "[ ! -d '$MP/var/cache/dnf' ] || [ -z \"\$(ls -A '$MP/var/cache/dnf' 2>/dev/null)\" ]"
+  # dnf clean all 会重建目录骨架，判空目录会误报；只关心有没有真包留在里面
+  chk "无 dnf 包缓存残留"                   "[ -z \"\$(find '$MP/var/cache/dnf' -name '*.rpm' -print -quit 2>/dev/null)\" ]"
 fi
 
 umount "$MP"
