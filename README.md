@@ -12,7 +12,8 @@
 | boot 资产 | `boot-orangepi5-plus-6.1.115.tar.zst` 37 MiB（Image 45 M + modules 142 M + bootloader 16 MiB） |
 | 镜像构建 | `out.img` 2.8 G，`verify-image.sh` **21 项全过** |
 | 发布产物 | `openEuler-24.03-LTS-SP4-orangepi5-plus-6.1.115-20261109.img.xz` **704 MiB** |
-| 集成安装（IoT 栈） | 同板 + `node-red,mosquitto`：rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
+| 集成安装 `node-red,mosquitto` | rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
+| 集成安装 `node-red,mosquitto,z2m` | rootfs **3.3 G**，镜像 3.7 G，**41 项全过**，产物 **776 MiB**（pnpm + tsc 构建耗时约 +8 分钟） |
 
 > 唯一未验证的是「刷到板上能不能起」—— 需要真机。所有静态校验都过了，但 U-Boot 是否走 extlinux 而非 `boot.scr`，只能上电才知道。
 
@@ -161,6 +162,8 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosqui
 协调器留空也能构建：镜像里写好注释占位，首启编辑 `/opt/zigbee2mqtt/data/configuration.yaml` 再 `systemctl restart zigbee2mqtt`。
 
 > 只装不跑校验的坑：Z2M 在协调器不可达时会 `Restart=on-failure` 反复重启，这是**正常现象**，不是镜像坏了。
+
+**Z2M 的构建产物判据容易写错**：`lib/` 顶层只有 `controller/eventBus/mqtt/state/zigbee.ts`，**没有 `index.ts`**；真正的入口是仓库根的 `index.js`（`package.json` 的 `main` 与 `scripts.start` 都是它），内部 `require("./dist/controller")`。`tsconfig` 只 `include ./lib/**`，所以 `tsc` 永远不会产出 `dist/index.js` —— 判 `dist/index.js` 会得到「构建成功但没有产物」的假象。正确判据是 `dist/controller.js`。
 
 ---
 
