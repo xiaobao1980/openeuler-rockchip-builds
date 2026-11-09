@@ -15,14 +15,14 @@
 | 集成安装 `node-red,mosquitto` | rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
 | 集成安装 `node-red,mosquitto,z2m` | rootfs **3.3 G**，镜像 3.7 G，**41 项全过**，产物 **776 MiB**（pnpm + tsc 构建耗时约 +8 分钟） |
 | `h96-m9` boot 资产 | `boot-h96-m9-6.1.172.tar.zst` **34 MiB**；来源 `armbian-custom-builds@h96s-20261109-r37`，MANIFEST：`kernel=6.1.172-vendor-rk35xx`、`dtb=rk3576-h96-m9s.dtb` |
-| `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 **708 MiB**（Release `h96-m9-iot-20261109-r9`，19 分钟；此版有坑 #18，**别刷**） |
-| `h96-m9` IoT 修复版（extlinux 路径） | `kernel /boot/Image` + `fdt /boot/dtb/...` + 根硬链接兼容层；**41 项全过**（新增 4 项把 conf 路径落地断言），产物 **710 MiB**，Release `h96-m9-iot-20261109-r10`（15 分钟，**刷这个**） |
+| `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 **708 MiB**（Release `h96-m9-iot-20261109-r9`，19 分钟；坑 #18 + #19，**别刷**） |
+| `h96-m9` IoT 修复版（extlinux 路径） | `kernel /boot/Image` + `fdt /boot/dtb/...` + 根硬链接兼容层；**41 项全过**（新增 4 项把 conf 路径落地断言），产物 **710 MiB**，Release `h96-m9-iot-20261109-r10`（15 分钟；真机证明内核能起但卡在 root 挂载 = 坑 #19，**别刷**） |
 
 > 上面带板名的行都是 `h96-m9` 实跑；未带板名的是 `orangepi5-plus` 基线实跑。
 > ⚠️ r9 / r10 的 `.img.xz` **文件名完全相同**（按日期命名，同一天重跑撞名），必须按 **Release tag** 取，别按文件名。后续构建的产物名已带 `-r<run>`。
 > 🌐 跨板：路径重写与 4 项校验在共用 `scripts/` 里，其它 RK35xx 板同样受益。
 >
-> **真机第一轮（2026-11-10，H96 MAX M9，串口 1500000 8N1）**：DDR → BL31 → U-Boot 2017.09 全正常，GPT/ext4 认到、`/boot/extlinux/extlinux.conf` 也被读到，但停在 `Retrieving file: /Image → ** File not found /Image **`（坑 #18）。37 项静态校验全过却起不来，因为校验没查 conf 里的路径是否指向实体文件。修复已合入，第二轮上板待验证：内核能否 `Starting kernel`、串口 console 是否对、systemd 能否进登录提示符，都还没看过。
+> **真机两轮（2026-11-10，H96 MAX M9，串口 1500000 8N1）**：第一轮 DDR → BL31 → U-Boot 2017.09 全正常，卡在 `Retrieving file: /Image → ** File not found /Image **`（坑 #18）；修好路径后第二轮 `/boot/Image` + DTB 加载成功、`Starting kernel ...` 后内核完整起来（8 核 / HDMI / USB / eMMC 全起），却卡在 `Waiting for root device UUID=...`（坑 #19）。两轮都是「静态校验全过、真机起不来」，分别补了「conf 路径 ↔ 实体文件」和「cmdline ↔ GPT 分区表」两组闭环断言。**尚未看到**：`VFS: Mounted root (ext4 filesystem)`、systemd 登录提示符、sshd / Node-RED / Mosquitto 首启。
 
 ---
 
@@ -204,7 +204,7 @@ scripts/
 ├── make-boot-assets.sh     # 打包 bootloader+Image+dtb+modules
 ├── build-image.sh          # qcow2 rootfs + boot 资产 → 可烧写 .img
 ├── integrate-iot.sh        # 可选：chroot 内烘焙 Node-RED / Mosquitto / Z2M
-└── verify-image.sh         # 上板前的静态校验（21 项，含 IoT 栈时 +10 项）
+└── verify-image.sh         # 上板前的静态校验（纯净镜像 30 项，含 IoT 栈时 +16 项 = 46 项）
 
 .github/workflows/
 ├── publish-boot-assets.yml # 产出 boot 资产 Release
@@ -284,6 +284,49 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
     sudo ln /mnt/boot/dtb/rockchip/rk3576-h96-m9s.dtb /mnt/dtb/rockchip/
     sync && sudo umount /mnt
     ```
+
+19. **`root=UUID=` 在无 initrd 时是死路 —— 真机第二轮真失败**。r10 修好路径后，`/boot/Image`（39 MB）与 DTB 都加载成功、`Starting kernel ...` 后内核完整起来（8 核、HDMI、USB、eMMC 全起），但日志停在：
+    ```
+    [    4.122012] Kernel command line: root=UUID=5719bdd4-781b-463e-b7b7-7ba8f80fa330 rootwait rw console=ttyS2,1500000n8 cma=256M selinux=disabled cgroup_enable=memory
+    [    5.551522] mmcblk2: mmc2:0001 hDEaP3 116 GiB
+    [    5.554826]  mmcblk2: p1                       ← 分区和 ext4 都是好的
+    [    5.693425] Waiting for root device UUID=5719bdd4-781b-463e-b7b7-7ba8f80fa330...
+    [   36.478862] vdd_gpu_s0: disabling             ← 之后只剩 regulator 收尾，不报错、不 panic
+    ```
+    **根因（有源码佐证）**：`armbian/linux-rockchip@rk-6.1-rkr7.2` 的 `init/do_mounts.c` 里 `name_to_dev_t()` 只有这几条分支：
+    ```c
+    if (strncmp(name, "PARTUUID=", 9) == 0) return devt_from_partuuid(name + 9);
+    if (strncmp(name, "PARTLABEL=", 10) == 0) return devt_from_partlabel(name + 10);
+    if (strncmp(name, "/dev/", 5) == 0) return devt_from_devname(name + 5);
+    return devt_from_devnum(name);
+    ```
+    内核**根本不解析 `UUID=`**——那是**文件系统 UUID**（ext4 superblock），要靠 initramfs 里的 udev/blkid 翻译成设备号。我们按设计删掉了 `uInitrd`，却继承了原厂 `armbianEnv.txt` 的 `rootdev=UUID=...` 口径，于是 `ROOT_DEV` 恒为 0，`rootwait` 无限等。上游 `armbian/build@main/config/bootscripts/boot-rk35xx.cmd` 也用 `PARTUUID=${partuuid}`（`part uuid mmc ...`）做 `rootdev` 的标准 fallback，并明确注释「U-Boot 与内核的 mmc 编号可能不同，硬编码 `/dev/mmcblk0p1` 会指向错误设备」；它加载的 `uInitrd` 正是我们删掉的那层。
+
+    **修复**：固定 GPT 分区项 1 的 `UniquePartitionGUID`（`ROOT_PARTUUID`），构建时用 `sgdisk -u "1:<GUID>"` 覆盖 `-n` 生成的随机 GUID 并回读断言；cmdline 改成 `root=PARTUUID=<GUID> rootwait rw rootfstype=ext4`。`fstab` 仍用文件系统 UUID（`blkid` 用户态解析，没问题）——**两个 UUID 是不同字段，不能混用**。`boards/_template/board.conf` 与 `board-resolve.sh`（独立 salt 派生）都补齐该字段，缺合法值直接 `die`。
+
+    **防回归**：`verify-image.sh` 新增 5 项闭环校验 —— GPT 表里实测 GUID = 板级值、loop 设备可见 PARTUUID 一致、conf 反解出的 PARTUUID 与两者一致、禁止出现 `root=UUID=`、必须带 `rootfstype=ext4`。坑 #18 和 #19 是同一类病：**静态校验只 grep 字符串，没把「配置 ↔ 产物实体」对起来**，所以 37/41 项全过照样起不来。
+
+    **同轮三处观察项**（都不是 root 挂载的根因，别混进归因）：
+    - `GPT:Primary header thinks Alt. header is not at the end of the disk. GPT:6531071 != 244285439`：镜像只占 3.2 G，刷到 116 GiB eMMC 后 backup GPT 仍在镜像末尾。非阻断——`block/partitions/efi.c` 在主 GPT 有效时照样注册 `p1` 并用 `unique_partition_guid` 填 `info->uuid`（这正是 `PARTUUID=` 能查到的前提）。刷完后 `sgdisk -e /dev/<卡>` 可消掉警告。
+    - 板上实测 `printk: console [ttyFIQ0] enabled` / `Registered fiq debugger ttyFIQ0`，8250 只注册 `ttyS4`/`ttyS5`，**这支 vendor 内核没有 `ttyS2`**；内核日志靠 fiq_debugger 自己注册 console 才看得见。两轮日志都正常，故这一轮**不动 cmdline**（改错 baud 解析会连日志都丢）。进系统后若串口没有登录提示符：`systemctl enable --now serial-getty@ttyFIQ0.service`。
+    - 原厂 `armbianEnv.txt` 与 `h96-m9.csc` 都是 `cma=512M`（4K60 VPU 解码缓冲需 ≥512M，8 GB 板推荐值），r10 只给了 256M。已对齐 `CMA=512M`，下一轮日志应出现 `cma: Reserved 512 MiB`。
+
+    **旧卡不重刷也能验证**（把卡挂到任意 Linux；等价于新镜像里的改动）：
+    ```bash
+    DEV=/dev/sdX            # 先 lsblk 确认，别写错盘；eMMC 在板上通常是 /dev/mmcblk2
+    PU=78ec7a30-e1b3-4d21-a228-e60e3b63dcee
+    sudo sgdisk -e "$DEV"                       # backup GPT 挪到物理末尾
+    sudo sgdisk -u "1:$PU" "$DEV"               # 固定分区项 GUID
+    sudo sgdisk -i 1 "$DEV" | grep -i 'unique GUID'   # 回读必须等于 $PU
+    sudo mount "${DEV}1" /mnt                  # NVMe/mmcblk 用 ${DEV}p1
+    sudo sed -i -E "s#root=[^ ]+#root=PARTUUID=$PU#" /mnt/boot/extlinux/extlinux.conf
+    grep -q 'rootfstype=' /mnt/boot/extlinux/extlinux.conf || \
+      sudo sed -i -E '/^[[:space:]]*append /s#$# rootfstype=ext4#' /mnt/boot/extlinux/extlinux.conf
+    sudo sed -i 's/cma=256M/cma=512M/' /mnt/boot/extlinux/extlinux.conf
+    grep -E 'append|root=' /mnt/boot/extlinux/extlinux.conf
+    sync && sudo umount /mnt
+    ```
+    改完上板，串口应看到 `VFS: Mounted root (ext4 filesystem)` 而不是 `Waiting for root device`。若只是想换干净镜像，直接刷带 `-r<run>` 的新 Release 更省事。
 
 ---
 
