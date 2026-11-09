@@ -316,12 +316,14 @@ setup_nodejs() {
 # 软链，其余全局包必须同样处理，否则 "装完了但 command -v 找不到"。
 link_global_bin() {
   local n="$1" d
-  d=$(cr 'dirname "$(command -v node)"')
-  if cr "[ -x '$d/$n' ]"; then
-    cr "ln -sf '$d/$n' /usr/local/bin/$n"
-    info "$n → /usr/local/bin/$n"
+  # 不能用 dirname $(command -v node)：那是软链 /usr/local/bin/node，dirname 得到
+  # /usr/local/bin，而 npm -g 的产物在 tarball 自己的 prefix 下。问 npm 要权威值。
+  d=$(cr 'npm prefix -g')
+  if cr "[ -x '$d/bin/$n' ]"; then
+    cr "ln -sf '$d/bin/$n' /usr/local/bin/$n"
+    info "$n → /usr/local/bin/$n（来自 $d/bin）"
   else
-    warn "  $d/$n 不存在"
+    warn "  $d/bin/$n 不存在"
   fi
 }
 
