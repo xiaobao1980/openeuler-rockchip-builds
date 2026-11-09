@@ -149,7 +149,7 @@ if [ ! -f "$B/boot/dtb/rockchip/$DTB" ] && [ -d "$SYSROOT/boot/dtb/rockchip" ]; 
     cp -a "$SYSROOT/boot/dtb/rockchip/$DTB" "$B/boot/dtb/rockchip/"
   fi
 fi
-[ -f "$B/boot/dtb/rockchip/$DTB" ] || die "找不到 $DTB（$SYSROOT/boot/dtb/rockchip 里有：$(ls "$SYSROOT/boot/dtb/rockchip" 2>/dev/null | head -5 | tr '\n' ' ')）"
+[ -f "$B/boot/dtb/rockchip/$DTB" ] || die "找不到 $DTB（$SYSROOT/boot/dtb/rockchip 里有：$(ls "$SYSROOT/boot/dtb/rockchip" 2>/dev/null | awk 'NR<=5' | tr '\n' ' ')）"
 cp -a "$SYSROOT/lib/modules/$KERNEL_VER" "$B/lib/modules/"
 [ -f "$SYSROOT/boot/extlinux/extlinux.conf" ] && cp -a "$SYSROOT/boot/extlinux/extlinux.conf" "$B/boot/extlinux/"
 # 顺手把原 cmdline 存一份，构建时按它改写（不自己凭空捏 root=/console=）
@@ -172,7 +172,8 @@ log "生成清单"
   echo "--- files ---"
   ( cd "$B" && find . -type f -printf '%s\t%p\n' | sort -k2 )
 } > "$B/MANIFEST.txt"
-cat "$B/MANIFEST.txt" | head -12
+# 不要 cat ... | head：pipefail 下 cat 收到 SIGPIPE 会被判失败，整个脚本中止
+head -12 "$B/MANIFEST.txt"
 
 # --- 4. 打包 --------------------------------------------------------------
 TAR="$OUT_DIR/boot-${BOARD_ID}-${KERNEL_VER%%-*}.tar.zst"

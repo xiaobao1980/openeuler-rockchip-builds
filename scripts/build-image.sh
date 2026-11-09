@@ -74,7 +74,7 @@ BA="$WORK/ba"
 # 可能是 6.1.115、6.1.172 等不同小版本。资产里有且只有一个 lib/modules/<ver>，
 # 那才是必须一字不差用在 depmod 和 /lib/modules 上的值。
 if [ -d "$BA/lib/modules" ]; then
-  _kv=$(find "$BA/lib/modules" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | head -1)
+  _kv=$(find "$BA/lib/modules" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | awk 'NR==1')
   if [ -n "$_kv" ] && [ "$_kv" != "$KERNEL_VER" ]; then
     info "⚠ 内核版本以资产为准：$KERNEL_VER → $_kv"
     KERNEL_VER=$_kv

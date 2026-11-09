@@ -114,12 +114,12 @@ jobs:
               # 取最近一个含 *.img.xz 的 Release
               TAG=$(gh release list --repo "$REPO" -L 30 --json tagName,assets \
                     --jq '.[] | select(any(.assets[]; .name|endswith(".img.xz"))) | .tagName' \
-                    | head -1)
+                    | awk 'NR==1')
               [ -n "$TAG" ] || { echo "::error::$REPO 里没有含 *.img.xz 的 Release"; exit 1; }
               echo "自动选择 Release: $TAG"
             fi
             URL=$(gh release view "$TAG" --repo "$REPO" --json assets \
-                  --jq '.assets[] | select(.name|endswith(".img.xz")) | .url' | head -1)
+                  --jq '.assets[] | select(.name|endswith(".img.xz")) | .url' | awk 'NR==1')
             [ -n "$URL" ] || { echo "::error::$REPO@$TAG 里没有 .img.xz"; exit 1; }
             # API 资产 URL 需要用 application/octet-stream 才能拿到二进制
             gh api "$URL" -H "Accept: application/octet-stream" > in/armbian.img.xz
@@ -152,7 +152,7 @@ jobs:
       - name: 发布到 Release
         run: |
           set -euo pipefail
-          TAR=$(ls out/boot-*.tar.zst | head -1)
+          TAR=$(ls out/boot-*.tar.zst | awk 'NR==1')
           # tag 取自产物文件名 boot-<board>-<kver>，不在这里拼 KERNEL_VER：
           # 它可能只是模板默认值，而 make-boot-assets.sh 会以镜像里实际的
           # lib/modules 为准纠正。tag 必须与真实内核一致，否则下游发现到的资产名会骗人。
