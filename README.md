@@ -4,6 +4,17 @@
 
 不编译内核、不编 U-Boot、不跑 `compile.sh`。全程只做文件操作，一块板 10–20 分钟出结果。
 
+## 已验证（2026-11-09 实跑）
+
+| 环节 | 结果 |
+|---|---|
+| arm64 runner | `ubuntu-24.04-arm`，4 核 / 15 G RAM / 107 G 空闲，public 仓库免费 |
+| boot 资产 | `boot-orangepi5-plus-6.1.115.tar.zst` 37 MiB（Image 45 M + modules 142 M + bootloader 16 MiB） |
+| 镜像构建 | `out.img` 2.8 G，`verify-image.sh` **21 项全过** |
+| 发布产物 | `openEuler-24.03-LTS-SP4-orangepi5-plus-6.1.115-20261109.img.xz` **704 MiB** |
+
+> 唯一未验证的是「刷到板上能不能起」—— 需要真机。所有静态校验都过了，但 U-Boot 是否走 extlinux 而非 `boot.scr`，只能上电才知道。
+
 ---
 
 ## 为什么是「嫁接」而不是「移植」
@@ -53,6 +64,10 @@ BootROM → rkbin(DDR+BL31) → U-Boot(TPL/SPL) → kernel+DTB → rootfs
 | **合计** | **96** 可构建 + 2 块缺 DTB | |
 
 上游新增一块 RK35xx 板 → 下次跑 workflow 自动出现，**不需要改本仓库任何文件**。
+
+> ⚠️ `boards.tsv` 只含上游收录的板。**自定义板（如 `h96-m9`）不在上游**，只存在于
+> `boards/<id>/board.conf`。CI 矩阵走 `scripts/list-boards.sh` 合并两个来源，
+> 只读 TSV 的话选 `h96-m9` 会得到 0 块板直接失败。
 
 两块 `NO_DTB`（上游用 `fdtdir` 自动匹配，拿不到确切 dtb 名）：`friendlyelec-rk3588`、`orangepi3b`。要用就手写一份 `boards/<id>/board.conf`。
 
@@ -121,11 +136,12 @@ boards/
 └── neardi-lz200/board.conf # 手写覆盖：示例第二块板
 
 scripts/
-├── sync-boards.sh          # 从上游 armbian/build 同步板卡清单
+├── sync-boards.sh          # 从上游 armbian/build 同步板卡清单 → boards.tsv
+├── list-boards.sh          # 合并「TSV + 手写 board.conf」→ CI 矩阵用清单
 ├── board-resolve.sh        # board id → 完整配置（手写优先，其次 TSV 推导）
 ├── make-boot-assets.sh     # 打包 bootloader+Image+dtb+modules
 ├── build-image.sh          # qcow2 rootfs + boot 资产 → 可烧写 .img
-└── verify-image.sh         # 上板前的静态校验（20 项）
+└── verify-image.sh         # 上板前的静态校验（21 项）
 
 .github/workflows/
 ├── publish-boot-assets.yml # 产出 boot 资产 Release
@@ -143,19 +159,41 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 
 ---
 
-## 六个会真的踩到的坑
+## 十四个会真的踩到的坑
+
+前六个是设计上就该处理的，后八个是实跑 CI 时**当场炸出来**的——写在这里是因为它们极难自查。
+
+### 设计层面
 
 1. **SELinux enforcing → 登录 `Login incorrect`**。openEuler 默认 enforcing，chroot 里改密码直接报 `Authentication token manipulation error`。构建默认写 `selinux=0`，配置文件同步 `SELINUX=disabled` 双保险。
 
 2. **`modules.dep` 必须用目标 rootfs 自己的 `depmod` 生成**。宿主 kmod 版本不同 → `modules.dep.bin` 格式不兼容 → 系统能起、串口能登，但 `lsmod` 空、`ip a` 只有 lo、音频全哑。这就是必须 arm64 原生 runner 的唯一原因。
 
-3. **`/lib/modules` 版本号必须与 `Image` 一字不差**。`verify-image.sh` 会断言目录里**只有** `6.1.172-vendor-rk35xx`，多一个都算失败。
+3. **`/lib/modules` 版本号必须与 `Image` 一字不差**。`verify-image.sh` 会断言目录里**只有一个**模块目录，且与内核版本一致。
 
 4. **官方 qcow2 的 fstab 不能留**。原 `/boot`、`/boot/efi`、xfs 根这些条目会让 systemd 直接进 emergency。构建时整体重写。
 
-5. **不要 initrd**。MMC/SDHCI/EXT4 全 `=y`，rootfs 自带的内核 initramfs 与 6.1.172 无关，留着必炸。生成的 `extlinux.conf` 不含 `initrd` 行。
+5. **不要 initrd**。MMC/SDHCI/EXT4 全 `=y`，rootfs 自带的内核 initramfs 与 vendor 内核无关，留着必炸。生成的 `extlinux.conf` 不含 `initrd` 行。
 
-6. **GitHub Release 单文件上限 2 GiB**。rootfs ~1.5 G → img ~1.7 G → xz ~700 M，压完才上传；超限就只留 Artifacts（14 天）。
+6. **GitHub Release 单文件上限 2 GiB**。rootfs ~1.5 G → img ~2.8 G → xz ~700 M，压完才上传。
+
+### 实跑暴露（都不是逻辑错误，是环境事实）
+
+7. **`/boot/Image` 是符号链接**。Armbian 里它指向 `vmlinuz-<ver>`，`cp -a` 只存链接本身，目标是悬空的。现象极具误导性：资产只有 25 MiB（正常 ~37 MiB），构建能跑完，装到板上才知道起不来。必须 `cp -aL`。
+
+8. **openEuler 整机镜像根分区在 LVM 里**。布局是 `p1=/boot(ext4)` + `p2=LVM PV`，未 `vgchange -ay` 时 `lsblk` 对 PV 的 FSTYPE 是空的。按 FSTYPE 挑分区永远挑不到，且报错信息只显示两个空类型分区。
+
+9. **`set -o pipefail` + `| head` = 随机失败**。`cat MANIFEST.txt | head -12` 会让 `cat` 收到 SIGPIPE，整条管道非零，`set -e` 直接中止且**没有任何错误输出**。全部改成 `head -12 file` / `awk 'NR==1'`。
+
+10. **`VAR=$(可能失败的函数)` 会吞掉错误分支**。`ROOTDEV=$(find_root_part ...)` 返回非零时，`set -e` 在执行到后面的 `[ -n "$ROOTDEV" ] || die` 之前就退出了，日志里连一行原因都没有。要 `|| true` 后显式判空。
+
+11. **`mount` 挂载点必须预先存在**。`mktemp -d` 只建了父目录，`mount ... "$MNT/ro"` 直接失败。
+
+12. **`sgdisk -i` 的 First sector 不能 `awk -F: '{print $2}'`**。输出是 `First sector: 32768 (at 16.0 MiB)`，去空格后得到 `32768(at16.0MiB)`，后续算术全错。用 `sed -n 's/^First sector: \([0-9]*\).*/\1/p'`。
+
+13. **`sudo` 建的产物属 root，`xz` 改不了属组**。压缩时报 `Cannot set the file group: Operation not permitted`。`build-image.sh` 结束时按 `SUDO_UID/SUDO_GID` 把产物交还调用者。
+
+14. **官方镜像目录带 `openEuler-` 前缀**。是 `/openEuler-24.03-LTS-SP4/virtual_machine_img/aarch64/`，不是 `/24.03-LTS-SP4/...`。
 
 ---
 
