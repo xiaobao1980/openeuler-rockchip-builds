@@ -266,7 +266,8 @@ jobs:
           KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
           echo "实际内核: $KVER"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
-          NAME="openEuler-${OE_VER}-${BOARD}-iot-${KVER%%-*}-${DATE}.img"
+          # 带 run number：同一天修完 bug 重跑时，旧产物与新产物不再同名（r9/r10 就撞过）
+          NAME="openEuler-${OE_VER}-${BOARD}-iot-${KVER%%-*}-${DATE}-r${GITHUB_RUN_NUMBER}.img"
           mv out.img "$NAME"
           echo "大小: $(du -h "$NAME" | cut -f1)"
           xz -T0 -6 "$NAME"

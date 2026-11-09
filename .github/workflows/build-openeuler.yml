@@ -258,7 +258,8 @@ jobs:
           KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
           echo "实际内核: $KVER"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
-          NAME="openEuler-${OE_VER}-${BOARD}-${KVER%%-*}-${DATE}.img"
+          # 带 run number：避免同一天多次构建产出的 .img.xz 同名却内容不同
+          NAME="openEuler-${OE_VER}-${BOARD}-${KVER%%-*}-${DATE}-r${GITHUB_RUN_NUMBER}.img"
           mv out.img "$NAME"
           echo "大小: $(du -h "$NAME" | cut -f1)"
           xz -T0 -6 "$NAME"

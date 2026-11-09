@@ -15,10 +15,14 @@
 | 集成安装 `node-red,mosquitto` | rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
 | 集成安装 `node-red,mosquitto,z2m` | rootfs **3.3 G**，镜像 3.7 G，**41 项全过**，产物 **776 MiB**（pnpm + tsc 构建耗时约 +8 分钟） |
 | `h96-m9` boot 资产 | `boot-h96-m9-6.1.172.tar.zst` **34 MiB**；来源 `armbian-custom-builds@h96s-20261109-r37`，MANIFEST：`kernel=6.1.172-vendor-rk35xx`、`dtb=rk3576-h96-m9s.dtb` |
-| `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 `openEuler-24.03-LTS-SP4-h96-m9-iot-6.1.172-20261109.img.xz` **708 MiB**（Release `h96-m9-iot-20261109-r9`，全流程 19 分钟） |
+| `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 **708 MiB**（Release `h96-m9-iot-20261109-r9`，19 分钟；此版有坑 #18，**别刷**） |
+| `h96-m9` IoT 修复版（extlinux 路径） | `kernel /boot/Image` + `fdt /boot/dtb/...` + 根硬链接兼容层；**41 项全过**（新增 4 项把 conf 路径落地断言），产物 **710 MiB**，Release `h96-m9-iot-20261109-r10`（15 分钟，**刷这个**） |
 
 > 上面带板名的行都是 `h96-m9` 实跑；未带板名的是 `orangepi5-plus` 基线实跑。
-> 唯一未验证的是「刷到板上能不能起」—— 需要真机。所有静态校验都过了，但 U-Boot 是否走 extlinux 而非 `boot.scr`，只能上电才知道。
+> ⚠️ r9 / r10 的 `.img.xz` **文件名完全相同**（按日期命名，同一天重跑撞名），必须按 **Release tag** 取，别按文件名。后续构建的产物名已带 `-r<run>`。
+> 🌐 跨板：路径重写与 4 项校验在共用 `scripts/` 里，其它 RK35xx 板同样受益。
+>
+> **真机第一轮（2026-11-10，H96 MAX M9，串口 1500000 8N1）**：DDR → BL31 → U-Boot 2017.09 全正常，GPT/ext4 认到、`/boot/extlinux/extlinux.conf` 也被读到，但停在 `Retrieving file: /Image → ** File not found /Image **`（坑 #18）。37 项静态校验全过却起不来，因为校验没查 conf 里的路径是否指向实体文件。修复已合入，第二轮上板待验证：内核能否 `Starting kernel`、串口 console 是否对、systemd 能否进登录提示符，都还没看过。
 
 ---
 
@@ -135,6 +139,8 @@ gh workflow run build-openeuler.yml -f boards=h96-m9 -f selinux=disabled
 xz -dc h96-m9-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
+> ⚠️ 只刷 **修好 extlinux 路径之后**构建的镜像（`h96-m9-iot-20261109-r9` 及更早的 r 版本有坑 #18，会停在 `File not found /Image`）。旧卡也可以不重刷，按坑 #18 的两条硬链接热修。
+
 串口 `1500000 8N1` 应看到 `U-Boot → extlinux → systemd`。首次登录后 `passwd` 改密码；要用满整卡：
 
 ```bash
@@ -217,9 +223,9 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 
 ---
 
-## 十七个会真的踩到的坑
+## 十八个会真的踩到的坑
 
-1–6 是设计上就该处理的，7–14 是纯净构建实跑 CI 时**当场炸出来**的，15–17 是 IoT / 多板阶段补的——写在这里是因为它们极难自查。
+1–6 是设计上就该处理的，7–14 是纯净构建实跑 CI 时**当场炸出来**的，15–17 是 IoT / 多板阶段补的，18 是**第一次上真机**才炸出来的——写在这里是因为它们极难自查。
 
 ### 设计层面
 
@@ -258,6 +264,26 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 16. **chroot 里 `localhost:1883` 的 DNS 与 `/etc/resolv.conf` 有关**。官方 qcow2 的 `resolv.conf` 可能指向 systemd-resolved 或是空的，chroot 内 `dnf`/`npm` 会全部域名解析失败。集成前临时写入宿主 nameserver，装完原样还原。
 
 17. **没发 boot 资产就跑 build = 30 秒「假失败」**。日志停在「解析板级配置」，只报 `$BOARD 没有 boot 资产 Release`，很容易误判成拼装脚本坏了。其实是物料没齐：两个 build workflow 只按前缀发现 Release，不会自己下载 Armbian 镜像。先跑 `publish-boot-assets.yml`（或在板上 `--from-dev` 抓取并手动发 Release），再跑 build。现成的可用命令已写在「快速开始」第 1 步和 workflow 的报错提示里。
+
+18. **extlinux.conf 的路径口径 —— 真机唯一一次真失败**。H96 MAX M9 的 vendor U-Boot `2017.09_armbian` 能 `Found /boot/extlinux/extlinux.conf` 并列出 label，但把 conf 里的 `kernel /Image`、`fdt /dtb/rockchip/...` **按分区根解析**，实测：
+    ```
+    Retrieving file: /Image
+    ** File not found /Image **
+    Skipping openEuler for failure retrieving kernel
+    ```
+    内核其实装在 `/boot/Image`。此前 37 项静态校验全过也照样起不来，因为校验只 grep `root=UUID` / `cma=` 这些字符串，从没验证 conf 路径是否指向实体文件。根因是 H96-m9 的 Armbian 镜像**没有 extlinux.conf**，构建走了内置模板，而模板沿用了「相对 `/boot`」的旧口径。
+
+    **修复**：`build-image.sh` 把 kernel/fdt 一律重写为 `/boot/Image` + `/boot/dtb/rockchip/<dtb>`（只继承原 conf 的 `append`）；再用**硬链接**在分区根挂一份 `/Image`、`/dtb/rockchip/<dtb>`，兼容会剥 `/boot` 前缀的 U-Boot 变体。硬链接同 inode、零额外占用，且**不能用软链**——U-Boot 2017.09 的 ext4 驱动不跟随 symlink。`verify-image.sh` 新增 4 项，把 conf 里的 kernel/fdt 路径解析出来断言实体文件存在。
+
+    **更深一层（出处）**：`armbian-custom-builds/boards/h96s/config/boards/h96-m9.csc` 第 19–24 行写明「本板走 `boot.scr + armbianEnv.txt`（无 extlinux）」「不要加 `SRC_EXTLINUX=yes`：自定义 U-Boot defconfig 未显式启用 BOOTMETH_EXTLINUX，强切 extlinux 有不开机风险」；第 150–152 行说明 `boot-rk3576.cmd` 的 bootargs 由 `armbianEnv.txt` 的 `extraboardargs` 拼接（含 `cma=512M`）。也就是说本仓库自己生成 extlinux.conf 属于**改了原厂启动链**。日志证明这块 U-Boot 仍能解析 extlinux，故先按最小改动修路径；若第二轮 `Starting kernel` 之后仍失败，下一步应恢复原厂链路：资产里保留 `boot.scr`/`boot.cmd`/`armbianEnv.txt`，镜像里还原，必要时用 `mkimage` 重编脚本以去掉 `uInitrd`。
+
+    **旧卡不重刷也能验证**（把卡挂到任意 Linux，rootfs 挂 `/mnt`；等价于新镜像里的根兼容层）：
+    ```bash
+    sudo ln /mnt/boot/Image /mnt/Image
+    sudo mkdir -p /mnt/dtb/rockchip
+    sudo ln /mnt/boot/dtb/rockchip/rk3576-h96-m9s.dtb /mnt/dtb/rockchip/
+    sync && sudo umount /mnt
+    ```
 
 ---
 
