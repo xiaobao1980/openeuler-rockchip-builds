@@ -155,19 +155,25 @@ jobs:
           TAR=$(ls out/boot-*.tar.zst | awk 'NR==1')
           # tag 取自产物文件名 boot-<board>-<kver>，不在这里拼 KERNEL_VER：
           # 它可能只是模板默认值，而 make-boot-assets.sh 会以镜像里实际的
-          # lib/modules 为准纠正。tag 必须与真实内核一致，否则下游发现到的资产名会骗人。
+          # lib/modules 为准纠正。tag 用短版本即可：下游按 boot-<board>- 前缀发现，
+          # 真实内核版本以资产内 MANIFEST.txt 为准（下面的 KVER_REAL）。
           TAG=$(basename "$TAR" .tar.zst)
-          KVER="${TAG#boot-${BOARD}-}"
-          echo "tag=$TAG  kver=$KVER"
+          KVER="${TAG#boot-${BOARD}-}"          # tag 用短版本，下游按前缀发现
+          # Release 说明要写真实内核版本：tag 是 ${KERNEL_VER%%-*} 截断出来的，
+          # 资产里 lib/modules 目录却可能是 6.1.172-vendor-rk35xx，照 tag 写会误导。
+          # 不用 | head —— pipefail 下 SIGPIPE 会让整个步骤静默失败。
+          KVER_REAL=$(tar --zstd -xOf "$TAR" MANIFEST.txt | sed -n 's/^kernel=//p')
+          [ -n "$KVER_REAL" ] || KVER_REAL="$KVER"
+          echo "tag=$TAG  kver=$KVER  real=$KVER_REAL"
           NOTES="板卡 \`${BOARD}\`（${{ steps.cfg.outputs.model }}）的已验证 boot 资产。
 
           - SoC：\`$(. /tmp/board.conf && echo "$FAMILY")\`
-          - 内核：\`${KVER}\`
+          - 内核：\`${KVER_REAL}\`
           - DTB：\`${{ steps.cfg.outputs.dtb }}\`
           - 来源：${{ inputs.image_url || inputs.armbian_repo }}
 
           内容：前 16 MiB bootloader 区（idbloader + u-boot.itb + GPT）、\`/boot/Image\`、
-          \`/boot/dtb/rockchip/*.dtb\`、\`/lib/modules/${KVER}\`、原 \`extlinux.conf\`。
+          \`/boot/dtb/rockchip/*.dtb\`、\`/lib/modules/${KVER_REAL}\`、原 \`extlinux.conf\`。
           消费方式：build-openeuler.yml 的 board 输入填 \`${BOARD}\` 即可。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$TAR" "$TAR.sha256" --repo "$GITHUB_REPOSITORY" --clobber

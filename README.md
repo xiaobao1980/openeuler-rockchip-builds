@@ -14,7 +14,10 @@
 | 发布产物 | `openEuler-24.03-LTS-SP4-orangepi5-plus-6.1.115-20261109.img.xz` **704 MiB** |
 | 集成安装 `node-red,mosquitto` | rootfs 1.5 G → **2.8 G**，镜像 3.2 G，`verify-image.sh` **37 项全过**，产物 **712 MiB** |
 | 集成安装 `node-red,mosquitto,z2m` | rootfs **3.3 G**，镜像 3.7 G，**41 项全过**，产物 **776 MiB**（pnpm + tsc 构建耗时约 +8 分钟） |
+| `h96-m9` boot 资产 | `boot-h96-m9-6.1.172.tar.zst` **34 MiB**；来源 `armbian-custom-builds@h96s-20261109-r37`，MANIFEST：`kernel=6.1.172-vendor-rk35xx`、`dtb=rk3576-h96-m9s.dtb` |
+| `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 `openEuler-24.03-LTS-SP4-h96-m9-iot-6.1.172-20261109.img.xz` **708 MiB**（Release `h96-m9-iot-20261109-r9`，全流程 19 分钟） |
 
+> 上面带板名的行都是 `h96-m9` 实跑；未带板名的是 `orangepi5-plus` 基线实跑。
 > 唯一未验证的是「刷到板上能不能起」—— 需要真机。所有静态校验都过了，但 U-Boot 是否走 extlinux 而非 `boot.scr`，只能上电才知道。
 
 ---
@@ -87,15 +90,27 @@ BootROM → rkbin(DDR+BL31) → U-Boot(TPL/SPL) → kernel+DTB → rootfs
 
 ### 1. 先产出某块板的 boot 资产（一次，内核不变就不用重发）
 
-推荐在板子上直接抓——这是**原始素材**，保真度最高：
+> ⚠️ **这是硬依赖**。两个 build workflow 都在「解析板级配置」步按 `boot-<board>-*` 前缀查 Release，缺了就约 30 秒失败，日志里只有 `没有 boot 资产 Release` 一行——**不会自动去下载 Armbian 镜像**。分层是刻意的，见「为什么单独建一个仓库」。
+
+走 CI（`Publish boot assets`），给 Armbian 产物仓库 + Release tag，或给一个 `.img.xz` 直链：
+
+```bash
+gh workflow run publish-boot-assets.yml --repo xiaobao1980/openeuler-rockchip-builds --ref main \
+  -f board=h96-m9 \
+  -f armbian_repo=xiaobao1980/armbian-custom-builds \
+  -f armbian_tag=h96s-20261109-r37
+
+# 约 2~3 分钟后确认产出（tag 里的内核号是短版本，真实值看资产内 MANIFEST.txt）
+gh release view boot-h96-m9-6.1.172 --repo xiaobao1980/openeuler-rockchip-builds
+```
+
+在板子上直接抓也行——**原始素材，保真度最高**：
 
 ```bash
 git clone https://github.com/<you>/openeuler-rockchip-builds && cd openeuler-rockchip-builds
 sudo BOARD=h96-m9 ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0
 gh release create boot-h96-m9-6.1.172 out/boot-h96-m9-6.1.172.tar.zst*
 ```
-
-或者走 CI（`Publish boot assets` workflow），给一个 `.img.xz` 直链即可。
 
 ### 2. 构建 openEuler 镜像
 
@@ -202,9 +217,9 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 
 ---
 
-## 十四个会真的踩到的坑
+## 十七个会真的踩到的坑
 
-前六个是设计上就该处理的，后八个是实跑 CI 时**当场炸出来**的——写在这里是因为它们极难自查。
+1–6 是设计上就该处理的，7–14 是纯净构建实跑 CI 时**当场炸出来**的，15–17 是 IoT / 多板阶段补的——写在这里是因为它们极难自查。
 
 ### 设计层面
 
@@ -241,6 +256,8 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 15. **openEuler 的 OS 仓没有 mosquitto**。要装就得加 EPOL 源（`/EPOL/main/$basearch/`）。`integrate-iot.sh` 不硬编码版本，而是从镜像里已有的 `*.repo` 反推主机名与 `openEuler-<ver>` 段拼出来，换 SP 也不会失效。
 
 16. **chroot 里 `localhost:1883` 的 DNS 与 `/etc/resolv.conf` 有关**。官方 qcow2 的 `resolv.conf` 可能指向 systemd-resolved 或是空的，chroot 内 `dnf`/`npm` 会全部域名解析失败。集成前临时写入宿主 nameserver，装完原样还原。
+
+17. **没发 boot 资产就跑 build = 30 秒「假失败」**。日志停在「解析板级配置」，只报 `$BOARD 没有 boot 资产 Release`，很容易误判成拼装脚本坏了。其实是物料没齐：两个 build workflow 只按前缀发现 Release，不会自己下载 Armbian 镜像。先跑 `publish-boot-assets.yml`（或在板上 `--from-dev` 抓取并手动发 Release），再跑 build。现成的可用命令已写在「快速开始」第 1 步和 workflow 的报错提示里。
 
 ---
 

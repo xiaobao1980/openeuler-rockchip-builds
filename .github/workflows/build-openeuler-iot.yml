@@ -173,7 +173,9 @@ jobs:
             AVAIL=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
                     --jq '.[].tagName' | grep -E '^boot-' | tr '\n' ' ' || true)
             echo "::error::$BOARD 没有 boot 资产 Release（期望 boot-${BOARD}-*）。"
-            echo "::error::先跑 publish-boot-assets.yml。现有：${AVAIL:-（无）}"
+            echo "::error::先发布资产：gh workflow run publish-boot-assets.yml -f board=$BOARD -f armbian_repo=xiaobao1980/armbian-custom-builds -f armbian_tag=<该板的 Armbian Release tag>"
+            echo "::error::或在板上抓：sudo BOARD=$BOARD ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0"
+            echo "::error::本仓库现有 boot 资产：${AVAIL:-（无）}"
             exit 1
           fi
           echo "boot 资产：$TAG"
