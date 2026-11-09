@@ -343,4 +343,13 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "SELINUX=$SELINUX"
 } > "$RESOLVED"
 BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
+
+# 被 sudo 调用时把产物交还给调用者。否则 out.img 属 root:root，后续非 root 的
+# xz -6 会报 "Cannot set the file group: Operation not permitted" 直接失败。
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_UID:-}" ]; then
+  chown "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT_IMG" 2>/dev/null || true
+  chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$WORK" 2>/dev/null || true
+  info "产物属主已交还 UID $SUDO_UID（xz/gh 需要非 root 才能改属组）"
+fi
+
 log "完成：$OUT_IMG ($(du -h "$OUT_IMG" | cut -f1))"
