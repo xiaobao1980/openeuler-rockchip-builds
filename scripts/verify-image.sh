@@ -72,6 +72,15 @@ chk "cmdline 含 selinux=$SELINUX"        "grep -q 'selinux=$SELINUX' '$CONF'"
 chk "cmdline 未引用 initrd"             "! grep -qE '^[[:space:]]*(initrd|fdtdir)' '$CONF'"
 chk "console=$CONSOLE"                  "grep -q 'console=$CONSOLE' '$CONF'"
 
+# 真机教训：conf 里写了路径、镜像里却没有对应实体文件时，上面这些「字符串」校验
+# 全过也照样起不来（U-Boot: ** File not found /Image **）。必须把路径解析出来落地查。
+KPATH=$(sed -nE 's/^[[:space:]]*kernel[[:space:]]+//p' "$CONF" | awk 'NR==1')
+FPATH=$(sed -nE 's/^[[:space:]]*fdt[[:space:]]+//p'    "$CONF" | awk 'NR==1')
+chk "conf kernel 路径指向实体内核 (${KPATH:-无})" "[ -n '$KPATH' ] && [ -f '$MP/${KPATH#/}' ] && [ ! -L '$MP/${KPATH#/}' ] && [ \$(stat -c %s '$MP/${KPATH#/}') -gt 10485760 ]"
+chk "conf fdt 路径指向实体 dtb (${FPATH:-无})"    "[ -n '$FPATH' ] && [ -f '$MP/${FPATH#/}' ] && [ ! -L '$MP/${FPATH#/}' ]"
+chk "根兼容层 /Image 是实体文件"                  "[ -f '$MP/Image' ] && [ ! -L '$MP/Image' ]"
+chk "根兼容层 /dtb/rockchip/$DTB"                 "[ -f '$MP/dtb/rockchip/$DTB' ] && [ ! -L '$MP/dtb/rockchip/$DTB' ]"
+
 echo "-- 挂载表"
 chk "fstab 根挂载用 UUID=$ROOT_UUID"     "grep -qE '^UUID=$ROOT_UUID[[:space:]]+/[[:space:]]' '$MP/etc/fstab'"
 chk "fstab 无 /boot/efi 残留"           "! grep -q '/boot/efi' '$MP/etc/fstab'"

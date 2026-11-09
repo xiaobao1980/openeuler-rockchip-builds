@@ -188,22 +188,26 @@ cp -a "$BA/lib/modules/$KERNEL_VER" "$R/lib/modules/"
 info "已装 /boot/Image、/boot/dtb/rockchip/$DTB、/lib/modules/$KERNEL_VER"
 
 # ---------------------------------------------------------------------------
-# 4. extlinux.conf —— 优先改写板上原文件，不凭空造 cmdline
+# 4. extlinux.conf —— cmdline 优先继承板上原文件，路径一律按本镜像布局重写
 # ---------------------------------------------------------------------------
+# 真机教训（H96 MAX M9 / U-Boot 2017.09_armbian）：该 Armbian 镜像根本没有
+# extlinux.conf，内置模板写的 `kernel /Image`、`fdt /dtb/rockchip/...` 是
+# 「相对 /boot」口径；vendor U-Boot 的 sysboot 却按分区根解析，实测日志：
+#   Retrieving file: /Image → ** File not found /Image **
+# 内核 /boot/Image 明明在卡上却加载不到，整条启动链停在 extlinux。
+# 本仓库把内核与 dtb 固定装在 /boot/ 下，故 kernel/fdt 必须自己重写，
+# 不能照抄原 conf 的相对路径；只继承 append（root=/console=/cma= 等）。
 log "生成 extlinux.conf"
 SRC_CONF="$BA/boot/extlinux/extlinux.conf"
+KL="  kernel /boot/Image"
+FL="  fdt /boot/dtb/rockchip/$DTB"
 if [ -f "$SRC_CONF" ]; then
-  KL=$(grep -m1 -E '^[[:space:]]*kernel[[:space:]]' "$SRC_CONF" || true)
-  FL=$(grep -m1 -E '^[[:space:]]*fdt[[:space:]]'    "$SRC_CONF" || true)
   AP=$(grep -m1 -E '^[[:space:]]*append[[:space:]]' "$SRC_CONF" | sed -E 's/^[[:space:]]*append[[:space:]]+//' || true)
-  [ -n "$KL" ] || KL="  kernel /Image"
-  [ -n "$FL" ] || FL="  fdt /dtb/rockchip/$DTB"
   [ -n "$AP" ] || AP="root=UUID=$ROOT_UUID rootwait rw console=$CONSOLE"
   info "继承板上原始 cmdline：$AP"
 else
-  KL="  kernel /Image"; FL="  fdt /dtb/rockchip/$DTB"
   AP="root=UUID=$ROOT_UUID rootwait rw console=$CONSOLE"
-  info "板上无 extlinux.conf，使用内置模板"
+  info "板上无 extlinux.conf，使用内置 cmdline（kernel/fdt 按 /boot 布局重写）"
 fi
 # UUID 强制对齐；CMA / SELinux 缺失则补
 AP=$(printf '%s' "$AP" | sed -E "s#root=[^ ]+#root=UUID=$ROOT_UUID#")
@@ -219,6 +223,14 @@ $FL
   append $AP
 EOF
 cat "$R/boot/extlinux/extlinux.conf"
+# 兼容层：有些 vendor U-Boot 会把 conf 路径剥成 /Image、/dtb/... 去分区根找。
+# 用硬链接把 /boot 下的实体文件再挂一份到根：同 inode、不额外占空间，也不是
+# 符号链接（U-Boot 2017.09 的 ext4 驱动不跟随 symlink，软链必然读成一小段文本）。
+# rsync -aHAX 的 -H 会把这层硬链接带进最终 ext4。
+ln -f "$R/boot/Image" "$R/Image"
+mkdir -p "$R/dtb/rockchip"
+ln -f "$R/boot/dtb/rockchip/$DTB" "$R/dtb/rockchip/$DTB"
+info "根兼容层：/Image、/dtb/rockchip/$DTB（硬链接，零额外占用）"
 # 不要 initrd：MMC/SDHCI/EXT4 全 =y，rootfs 自带的内核 initramfs 与 6.1.172 无关
 rm -f "$R/boot/initrd"* "$R/boot/uInitrd"* 2>/dev/null || true
 
