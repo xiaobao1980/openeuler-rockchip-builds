@@ -17,7 +17,7 @@
 | `h96-m9` boot 资产 | `boot-h96-m9-6.1.172.tar.zst` **34 MiB**；来源 `armbian-custom-builds@h96s-20261109-r37`，MANIFEST：`kernel=6.1.172-vendor-rk35xx`、`dtb=rk3576-h96-m9s.dtb` |
 | `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 **708 MiB**（Release `h96-m9-iot-20261109-r9`，19 分钟；坑 #18 + #19，**别刷**） |
 | `h96-m9` IoT 修复版（extlinux 路径） | `kernel /boot/Image` + `fdt /boot/dtb/...` + 根硬链接兼容层；**41 项全过**（新增 4 项把 conf 路径落地断言），产物 **710 MiB**，Release `h96-m9-iot-20261109-r10`（15 分钟；真机证明内核能起但卡在 root 挂载 = 坑 #19，**别刷**） |
-| `h96-m9` IoT 修复版（`root=PARTUUID=`） | 固定 GPT 分区 GUID + cmdline 改 `root=PARTUUID=` / `rootfstype=ext4`，`cma=512M`；**46 项全过**（新增 5 项闭环校验），镜像 **3.2 G**，产物 `openEuler-...-r11.img.xz` **743,299,976 B ≈ 709 MiB**，run `42667041838`（11 分钟，success），Release **`h96-m9-iot-20261109-r11`** ← **刷这个** |
+| `h96-m9` IoT 修复版（`root=PARTUUID=`） | 固定 GPT 分区 GUID + cmdline 改 `root=PARTUUID=` / `rootfstype=ext4`，`cma=512M`；**46 项全过**（新增 5 项闭环校验），镜像 **3.2 G**，产物 `openEuler-...-r11.img.xz` **743,299,976 B ≈ 709 MiB**，run `42667041838`（11 分钟，success），Release **`h96-m9-iot-20261109-r11`** ← **刷这个**；**2026-11-10 真机上板验证通过**：无首启向导、`root/openeuler` 直接进命令行、DHCP 拿 `192.168.50.102` |
 
 > 上面带板名的行都是 `h96-m9` 实跑；未带板名的是 `orangepi5-plus` 基线实跑。
 > ⚠️ r9 / r10 的 `.img.xz` **文件名完全相同**（按日期命名，同一天重跑撞名），所以后续构建的产物名已带 `-r<run>`，取镜像一律按 **Release tag**。当前 Release 列表里只剩 `h96-m9-iot-20261109-r11` 与 `boot-h96-m9-6.1.172`，两个有问题版本已不可下载，正好避免误刷。
