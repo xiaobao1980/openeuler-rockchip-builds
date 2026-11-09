@@ -66,8 +66,13 @@ mount -o ro "$P1" "$MP" || { bad "挂载 $P1 失败"; exit 1; }
 echo "-- 系统身份"
 chk "/etc/os-release 是 openEuler"     "grep -q '^ID=\"*openEuler' '$MP/etc/os-release'"
 chk "/etc/passwd 有 root"              "grep -q '^root:' '$MP/etc/passwd'"
-chk "管理员账号 openeuler 存在"        "grep -q '^openeuler:' '$MP/etc/passwd'"
-chk "openeuler 在 wheel 组"            "grep -q '^wheel:.*openeuler' '$MP/etc/group'"
+# 管理员账号（逗号/空格分隔可多个，默认 openeuler）
+IFS=' ,' read -r -a _AV <<< "${ADMIN_USER:-openeuler}"
+for _au in "${_AV[@]}"; do
+  [ -z "$_au" ] && continue
+  chk "管理员账号 $_au 存在"        "grep -q '^${_au}:' '$MP/etc/passwd'"
+  chk "$_au 在 wheel 组"            "grep -q '^wheel:.*${_au}' '$MP/etc/group'"
+done
 chk "sudoers 放行 wheel"              "grep -q '%wheel' '$MP/etc/sudoers.d/wheel' 2>/dev/null || grep -q '%wheel' '$MP/etc/sudoers' 2>/dev/null"
 chk "/usr/sbin/depmod 存在"             "[ -x '$MP/usr/sbin/depmod' ]"
 chk "/usr/sbin/sshd 存在"               "[ -x '$MP/usr/sbin/sshd' ]"

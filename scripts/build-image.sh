@@ -11,7 +11,7 @@
 #   BOARD_CONF  板级配置（默认 boards/h96-m9/board.conf）
 #   WORK        中间目录（默认 ./work，CI 里建议放 /mnt）
 #   ROOT_PW     root 密码（默认 openeuler）
-#   ADMIN_USER / ADMIN_PW   非 root 管理员账号（默认 openeuler / 同 ROOT_PW），日常登这个
+#   ADMIN_USER / ADMIN_PW   非 root 管理员账号（逗号/空格分隔可多个，默认 openeuler / 同 ROOT_PW），日常登这些
 #   SSH_PUBKEY              root 的 SSH 公钥；传入则只允许密钥登录、关闭 root 密码
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
@@ -299,36 +299,45 @@ done
 # 6b. 安全加固：非 root 管理员 + 可选 SSH 公钥
 #     默认 root/openeuler 密码直登只是 bring-up 期方便；长期应登管理员账号、用密钥。
 # ---------------------------------------------------------------------------
-# 1) 非 root 管理员账号（日常登这个，需要时才 sudo）
-if ! grep -q "^${ADMIN_USER}:" "$R/etc/passwd"; then
-  useradd -R "$R" -m -s /bin/bash "$ADMIN_USER" 2>/dev/null \
-    || useradd -m -s /bin/bash "$ADMIN_USER" 2>/dev/null
-  # 兜底：直接写账号库（useradd -R 在精简环境可能不可用）
-  grep -q "^${ADMIN_USER}:" "$R/etc/passwd" || {
-    echo "${ADMIN_USER}:x:1000:1000::/home/${ADMIN_USER}:/bin/bash" >> "$R/etc/passwd"
-    grep -q "^${ADMIN_USER}:" "$R/etc/group" || echo "${ADMIN_USER}:x:1000:" >> "$R/etc/group"
-    mkdir -p "$R/home/${ADMIN_USER}"; chmod 750 "$R/home/${ADMIN_USER}"
-  }
-fi
-# 设密码（写 shadow 哈希，绕开 PAM/SELinux）
-if command -v openssl >/dev/null; then
-  AH=$(openssl passwd -6 "$ADMIN_PW")
-  awk -F: -v u="$ADMIN_USER" -v h="$AH" 'BEGIN{OFS=":"} $1==u{ $2=h } {print}' "$R/etc/shadow" > "$R/etc/shadow.new"
-  if ! grep -q "^${ADMIN_USER}:" "$R/etc/shadow"; then
-    echo "${ADMIN_USER}:${AH}:18000:0:99999:7:::" >> "$R/etc/shadow.new"
-  fi
-  mv "$R/etc/shadow.new" "$R/etc/shadow"; chmod 000 "$R/etc/shadow"
-fi
-# 加入 wheel（openEuler 的 sudo 默认放行 %wheel）；wheel 组缺失则补建
-grep -q '^wheel:' "$R/etc/group" || groupadd -R "$R" wheel 2>/dev/null || true
-usermod -R "$R" -aG wheel "$ADMIN_USER" 2>/dev/null \
-  || sed -i -E "s/^(${ADMIN_USER}:[^:]*:[^:]*:[^:]*:)/\\1wheel/" "$R/etc/group" 2>/dev/null || true
-# sudoers 兜底：明确放行 wheel（openEuler 自带的可能被注释）
+# 1) 非 root 管理员账号（可多个，逗号/空格分隔；日常登这些，需要时才 sudo）
+#    统一用 ADMIN_PW；都进 wheel，sudo 需密码
+IFS=' ,' read -r -a ADMINS <<< "${ADMIN_USER//,/ }"
+if [ "${#ADMINS[@]}" -eq 0 ]; then ADMINS=(openeuler); fi
+_n=0
+# sudoers 兜底：明确放行 wheel（openEuler 自带的可能被注释）—— 一次覆盖所有管理员
 if [ -d "$R/etc/sudoers.d" ]; then
-  printf '%%%%wheel ALL=(ALL) ALL\n' > "$R/etc/sudoers.d/wheel"
+  printf '%%wheel ALL=(ALL) ALL\n' > "$R/etc/sudoers.d/wheel"
   chmod 440 "$R/etc/sudoers.d/wheel"
 fi
-info "已建管理员账号 $ADMIN_USER（sudo 需密码），日常登这个而非 root"
+# wheel 组缺失则补建
+grep -q '^wheel:' "$R/etc/group" || groupadd -R "$R" wheel 2>/dev/null || true
+for AU in "${ADMINS[@]}"; do
+  [ -z "$AU" ] && continue
+  if ! grep -q "^${AU}:" "$R/etc/passwd"; then
+    useradd -R "$R" -m -s /bin/bash "$AU" 2>/dev/null \
+      || useradd -m -s /bin/bash "$AU" 2>/dev/null
+    # 兜底：直接写账号库（useradd -R 在精简环境可能不可用），UID 自增避免多账号冲突
+    grep -q "^${AU}:" "$R/etc/passwd" || {
+      _UID=$((1000 + _n)); _n=$((_n + 1))
+      echo "${AU}:x:${_UID}:${_UID}::/home/${AU}:/bin/bash" >> "$R/etc/passwd"
+      grep -q "^${AU}:" "$R/etc/group" || echo "${AU}:x:${_UID}:" >> "$R/etc/group"
+      mkdir -p "$R/home/${AU}"; chmod 750 "$R/home/${AU}"
+    }
+  fi
+  # 设密码（写 shadow 哈希，绕开 PAM/SELinux）
+  if command -v openssl >/dev/null; then
+    AH=$(openssl passwd -6 "$ADMIN_PW")
+    awk -F: -v u="$AU" -v h="$AH" 'BEGIN{OFS=":"} $1==u{ $2=h } {print}' "$R/etc/shadow" > "$R/etc/shadow.new"
+    if ! grep -q "^${AU}:" "$R/etc/shadow"; then
+      echo "${AU}:${AH}:18000:0:99999:7:::" >> "$R/etc/shadow.new"
+    fi
+    mv "$R/etc/shadow.new" "$R/etc/shadow"; chmod 000 "$R/etc/shadow"
+  fi
+  # 加入 wheel（openEuler 的 sudo 默认放行 %wheel）
+  usermod -R "$R" -aG wheel "$AU" 2>/dev/null \
+    || sed -i -E "s/^(wheel:[^:]*:[^:]*:)/\\1${AU}/" "$R/etc/group" 2>/dev/null || true
+done
+info "已建管理员账号：$(IFS=,; echo "${ADMINS[*]}")（sudo 需密码），日常登这些而非 root"
 
 # 2) SSH 公钥（可选）：传入则只允许密钥登录，关闭 root 密码
 if [ -n "$SSH_PUBKEY" ]; then
@@ -480,7 +489,7 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "IOT_NODERED_PORT=${IOT_NODERED_PORT:-1880}"
   echo "IOT_Z2M_PORT=${IOT_Z2M_PORT:-8080}"
 } > "$RESOLVED"
-BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
+ADMIN_USER="$ADMIN_USER" BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
 
 # 被 sudo 调用时把产物交还给调用者。否则 out.img 属 root:root，后续非 root 的
 # xz -6 会报 "Cannot set the file group: Operation not permitted" 直接失败。
