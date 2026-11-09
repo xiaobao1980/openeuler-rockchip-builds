@@ -207,7 +207,8 @@ setup_mosquitto() {
   mkdir -p "$R/etc/mosquitto/conf.d" "$R/var/lib/mosquitto" "$R/var/log/mosquitto"
   # 密码文件（-b 批量；-c 首次创建）
   if [ ! -f "$R/etc/mosquitto/passwd" ]; then
-    : > "$R/etc/mosquitto/passwd"
+    # 用 600 创建：权限过宽时 mosquitto_passwd 会告警
+    install -m 600 /dev/null "$R/etc/mosquitto/passwd"
   fi
   if ! grep -q "^${MQTT_USER}:" "$R/etc/mosquitto/passwd" 2>/dev/null; then
     cr "mosquitto_passwd -b /etc/mosquitto/passwd '$MQTT_USER' '$MQTT_PASS'" || die "写 mosquitto 密码文件失败"
@@ -309,6 +310,21 @@ setup_nodejs() {
   cr "npm config set fund false && npm config set audit false" || true
 }
 
+
+# npm -g 的产物落在 node 自己的 bin 目录（官方 tarball 的 prefix 是
+# /usr/local/lib/nodejs/node-vX-linux-arm64），不在 PATH 上。node/npm/npx 我们建了
+# 软链，其余全局包必须同样处理，否则 "装完了但 command -v 找不到"。
+link_global_bin() {
+  local n="$1" d
+  d=$(cr 'dirname "$(command -v node)"')
+  if cr "[ -x '$d/$n' ]"; then
+    cr "ln -sf '$d/$n' /usr/local/bin/$n"
+    info "$n → /usr/local/bin/$n"
+  else
+    warn "  $d/$n 不存在"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 4. Node-RED（systemd 直管，不用 PM2）
 # ---------------------------------------------------------------------------
@@ -321,7 +337,8 @@ setup_nodered() {
       die "node-red 安装失败"
     }
   }
-  cr "command -v node-red >/dev/null" || die "node-red 装完找不到"
+  cr "command -v node-red >/dev/null" || link_global_bin node-red
+  cr "command -v node-red >/dev/null" || die "node-red 装完找不到（npm -g 的 bin 目录未入 PATH）"
   info "路径: $(cr 'command -v node-red')"
 
   # 独立系统用户：Node-RED 官方明确不建议 root 运行
@@ -392,7 +409,10 @@ setup_z2m() {
     pm=pnpm
   else
     info "安装 pnpm"
-    if cr "npm install -g pnpm@10" >/tmp/iot-pnpm.log 2>&1; then pm=pnpm; fi
+    if cr "npm install -g pnpm@10" >/tmp/iot-pnpm.log 2>&1; then
+      cr "command -v pnpm >/dev/null" || link_global_bin pnpm
+      cr "command -v pnpm >/dev/null" && pm=pnpm
+    fi
   fi
   info "包管理器: ${pm:-npm}"
 
