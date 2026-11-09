@@ -126,7 +126,8 @@ info "组件: $STACK"
 # 1. 基础包
 # ---------------------------------------------------------------------------
 log "安装基础包（dnf）"
-DNFC="dnf -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs"
+DNFC="dnf -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+      --setopt=timeout=20 --setopt=retries=1"
 cr "$DNFC makecache" >/dev/null 2>&1 || warn "makecache 失败，继续"
 # tar/xz 是解压 Node 用的；procps-ng 提供 pgrep 供后续排障；shadow 提供 useradd
 BASE_PKGS="tar xz curl ca-certificates git procps-ng shadow util-linux hostname findutils"
@@ -143,18 +144,37 @@ cr "command -v curl >/dev/null && command -v git >/dev/null" || die "curl/git �
 # 主机名与版本号动态拼一个 EPOL 源 —— 不硬编码版本，换 SP 也不会失效。
 epol_fallback() {
   [ -f "$R/etc/yum.repos.d/epol-iot.repo" ] && return 0
-  local base ver
-  base=$(grep -hoE 'https?://[^/]+' "$R"/etc/yum.repos.d/*.repo 2>/dev/null | awk 'NR==1')
+  local ver arch cand chosen="" defhost
   ver=$(grep -hoE 'openEuler-[0-9.]+-LTS(-SP[0-9]+)?' "$R"/etc/yum.repos.d/*.repo 2>/dev/null | awk 'NR==1')
-  [ -n "$base" ] && [ -n "$ver" ] || { warn "无法从现有 repo 推导 EPOL 地址（base='$base' ver='$ver'）"; return 1; }
-  info "添加 EPOL 源: $base/$ver/EPOL/main/\$basearch/"
+  [ -n "$ver" ] || { warn "无法从现有 repo 判定 openEuler 版本号"; return 1; }
+  arch=$(cr 'uname -m')
+  defhost=$(grep -hoE 'https?://[^/]+' "$R"/etc/yum.repos.d/*.repo 2>/dev/null | awk 'NR==1')
+
+  # 关键：镜像自带的 repo 指向 license.coscl.org.cn —— 实测这台主机 30s 连不上，
+  # 所以「从现有 repo 反推 EPOL 地址」会得到一个死地址。按候选顺序实测 repomd.xml
+  # 可达性，取第一个能用的。
+  for cand in \
+      "https://dl-cdn.openeuler.openatom.cn/$ver/EPOL/main/$arch" \
+      "https://repo.openeuler.openatom.cn/$ver/EPOL/main/$arch" \
+      "${defhost:-none}/$ver/EPOL/main/$arch"; do
+    case "$cand" in /*|none/*) continue ;; esac
+    if curl -fsS -o /dev/null --max-time 15 "$cand/repodata/repomd.xml" 2>/dev/null; then
+      chosen="$cand"; break
+    fi
+    info "  不可达: $cand"
+  done
+  [ -n "$chosen" ] || { warn "EPOL 候选源全部不可达（镜像自带 $defhost 也不通）"; return 1; }
+
+  info "添加 EPOL 源: $chosen/"
   cat > "$R/etc/yum.repos.d/epol-iot.repo" <<EOF
 [EPOL-iot]
 name=openEuler EPOL (added by openeuler-rockchip-builds)
-baseurl=$base/$ver/EPOL/main/\$basearch/
+baseurl=$chosen/
 enabled=1
 gpgcheck=0
 skip_if_unavailable=1
+timeout=20
+retries=1
 EOF
   cr "dnf -y makecache" >/dev/null 2>&1 || true
 }
@@ -164,10 +184,10 @@ EOF
 # ---------------------------------------------------------------------------
 setup_mosquitto() {
   log "安装 Mosquitto"
-  if ! cr "$DNFC install mosquitto mosquitto-clients" >/tmp/iot-dnf-mosq.log 2>&1; then
+  if ! cr "$DNFC install mosquitto" >/tmp/iot-dnf-mosq.log 2>&1; then
     warn "OS 仓没有 mosquitto，补 EPOL 源后重试"
     epol_fallback || die "无法添加 EPOL 源"
-    if ! cr "$DNFC install mosquitto mosquitto-clients" >/tmp/iot-dnf-mosq.log 2>&1; then
+    if ! cr "$DNFC install mosquitto" >/tmp/iot-dnf-mosq.log 2>&1; then
       tail -25 /tmp/iot-dnf-mosq.log >&2
       die "mosquitto 安装失败（EPOL 也装不上）"
     fi
