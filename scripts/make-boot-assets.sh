@@ -88,23 +88,24 @@ log "抽取 bootloader 区（前 ${BOOTLOADER_BYTES} 字节）"
 if [ "$MODE" = dev ]; then
   [ -b "$SRC" ] || die "$SRC 不是块设备"
   dd if="$SRC" of="$OUT_DIR/stage/bootloader-16M.bin" bs=512 count=$((BOOTLOADER_BYTES / 512)) status=none
-  ROOTDEV="$(find_root_part "$SRC")"
+  ROOTDEV="$(find_root_part "$SRC")" || true
   [ -n "$ROOTDEV" ] || { dump_layout "$SRC"; die "在 $SRC 上找不到含 /etc/os-release 的分区"; }
   mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
 else
   IMG="$SRC"
   case "$IMG" in
-    *.xz) log "解压 $IMG（约 2.6 GB，需数分钟）"; xz -dc "$IMG" > "$OUT_DIR/stage/armbian.img" ;;
+    *.xz) log "解压 $IMG（数分钟）"; xz -dc "$IMG" > "$OUT_DIR/stage/armbian.img" ;;
     *)    cp --reflink=auto "$IMG" "$OUT_DIR/stage/armbian.img" ;;
   esac
   IMG="$OUT_DIR/stage/armbian.img"
   info_sz=$(du -h "$IMG" | cut -f1)
   printf '    解压后大小: %s\n' "$info_sz"
   dd if="$IMG" of="$OUT_DIR/stage/bootloader-16M.bin" bs=512 count=$((BOOTLOADER_BYTES / 512)) status=none
-  LOOP=$(losetup --find --show --partscan "$IMG")
+  LOOP=$(losetup --find --show --partscan "$IMG") || die "losetup 失败（runner 需要 loop 设备权限）"
   partprobe "$LOOP" 2>/dev/null || true
-  ROOTDEV="$(find_root_part "$LOOP")"
+  sleep 1   # 让内核完成分区扫描，避免紧接着的 lsblk 看不到 p1
+  ROOTDEV="$(find_root_part "$LOOP")" || true
   [ -n "$ROOTDEV" ] || { dump_layout "$LOOP"; die "镜像里找不到含 /etc/os-release 的分区"; }
   mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
