@@ -126,6 +126,43 @@ growpart /dev/mmcblk0 1 && resize2fs /dev/mmcblk0p1
 
 ---
 
+## 集成安装：IoT 网关镜像（可选）
+
+`Actions → Build openEuler IoT Image` 在同一个拼装流程上多烘焙一层服务栈，产出**烧完开机即可用**的网关镜像，不用上板后再联网装一遍。
+
+| 组件 | 端口 | 管理 |
+|---|---|---|
+| Mosquitto MQTT | 1883 | `systemctl status mosquitto` |
+| Mosquitto WebSocket | 8083 | `ws://<IP>:8083`（IoTManager / MQTT.js） |
+| Node-RED | 1880 | `systemctl status node-red` |
+| Zigbee2MQTT | 8080 | `systemctl status zigbee2mqtt` |
+
+参考实现是 `iot/install_nodered_z2m_ubuntu24_v3.5.sh`（在线装在已运行的 Ubuntu 上），烘焙进镜像必须换三样东西：
+
+| | 原脚本（在线装） | 本仓库（烘焙进镜像） | 为什么 |
+|---|---|---|---|
+| 包管理 | `apt` | `dnf`，**mosquitto 走 EPOL 仓** | openEuler 的 OS 仓没有 mosquitto；脚本会自动按现有 repo 的主机名与版本号拼 EPOL 源，不硬编码 |
+| 进程管理 | PM2（`pm2 startup` + dump） | **systemd 原生 unit** | sealed 镜像没有「用户登录」这回事，PM2 的 resurrect 依赖 `/home` 下的 dump，属于自找麻烦 |
+| 路径/权限 | `$HOME/.node-red`、`$HOME/.pm2`，用户态 | `/var/lib/{node-red,zigbee2mqtt}`，独立系统用户 | 服务不跑 root；`nodered` / `zigbee2mqtt` 由构建时创建 |
+
+**一个意外的好消息**：openEuler 的 `mosquitto-2.0.20` 已链接 `libwebsockets.so.19` —— 天生支持 8083 WebSocket。原脚本里「apt 版没 WS，要不要源码编译」这个纠结在这里**整个不存在**，dnf 装完就有。（脚本仍会实测 `grep -aq libwebsockets.so`，万一某版本没编 WS 就不写 `listener 8083`，否则整个 broker 起不来。）
+
+```bash
+# 完整栈（含 Z2M，构建时间 +8~12 分钟：源码 clone + pnpm install + tsc）
+gh workflow run build-openeuler-iot.yml \
+  -f board=h96-m9 -f stack=node-red,mosquitto,z2m \
+  -f zigbee_coord=tcp://192.168.30.107:8888 -f zigbee_adapter=ezsp
+
+# 只要 MQTT + Node-RED（约 6 分钟）
+gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosquitto
+```
+
+协调器留空也能构建：镜像里写好注释占位，首启编辑 `/opt/zigbee2mqtt/data/configuration.yaml` 再 `systemctl restart zigbee2mqtt`。
+
+> 只装不跑校验的坑：Z2M 在协调器不可达时会 `Restart=on-failure` 反复重启，这是**正常现象**，不是镜像坏了。
+
+---
+
 ## 目录结构
 
 ```
@@ -141,11 +178,13 @@ scripts/
 ├── board-resolve.sh        # board id → 完整配置（手写优先，其次 TSV 推导）
 ├── make-boot-assets.sh     # 打包 bootloader+Image+dtb+modules
 ├── build-image.sh          # qcow2 rootfs + boot 资产 → 可烧写 .img
-└── verify-image.sh         # 上板前的静态校验（21 项）
+├── integrate-iot.sh        # 可选：chroot 内烘焙 Node-RED / Mosquitto / Z2M
+└── verify-image.sh         # 上板前的静态校验（21 项，含 IoT 栈时 +10 项）
 
 .github/workflows/
 ├── publish-boot-assets.yml # 产出 boot 资产 Release
-└── build-openeuler.yml     # 矩阵构建 + 发布镜像
+├── build-openeuler.yml     # 矩阵构建 + 发布纯净镜像
+└── build-openeuler-iot.yml # 单板 + 集成安装 IoT 栈
 ```
 
 **配置优先级**：`boards/<id>/board.conf`（手写，永不覆盖）→ `boards/boards.tsv` + `_template`（自动推导）。
@@ -194,6 +233,10 @@ mkdir -p boards/radxa-rock-4d && cp boards/_template/board.conf boards/radxa-roc
 13. **`sudo` 建的产物属 root，`xz` 改不了属组**。压缩时报 `Cannot set the file group: Operation not permitted`。`build-image.sh` 结束时按 `SUDO_UID/SUDO_GID` 把产物交还调用者。
 
 14. **官方镜像目录带 `openEuler-` 前缀**。是 `/openEuler-24.03-LTS-SP4/virtual_machine_img/aarch64/`，不是 `/24.03-LTS-SP4/...`。
+
+15. **openEuler 的 OS 仓没有 mosquitto**。要装就得加 EPOL 源（`/EPOL/main/$basearch/`）。`integrate-iot.sh` 不硬编码版本，而是从镜像里已有的 `*.repo` 反推主机名与 `openEuler-<ver>` 段拼出来，换 SP 也不会失效。
+
+16. **chroot 里 `localhost:1883` 的 DNS 与 `/etc/resolv.conf` 有关**。官方 qcow2 的 `resolv.conf` 可能指向 systemd-resolved 或是空的，chroot 内 `dnf`/`npm` 会全部域名解析失败。集成前临时写入宿主 nameserver，装完原样还原。
 
 ---
 

@@ -12,6 +12,9 @@
 #   WORK        中间目录（默认 ./work，CI 里建议放 /mnt）
 #   ROOT_PW     root 密码（默认 openeuler）
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
+#   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
+#   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
+#               见 scripts/integrate-iot.sh 的选项说明
 # ============================================================================
 set -euo pipefail
 
@@ -40,6 +43,7 @@ ROOT_PW="${ROOT_PW:-openeuler}"
 CMA="${CMA_OVERRIDE:-$CMA}"
 SELINUX="${SELINUX_MODE:-$SELINUX}"
 OE_VERSION="${OE_VER:-$OE_VERSION}"
+INTEGRATE="${INTEGRATE:-none}"
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
@@ -259,16 +263,50 @@ for u in cloud-init cloud-init-local cloud-config cloud-final; do
 done
 
 # ---------------------------------------------------------------------------
-# 7. depmod —— 必须用 rootfs 自带的 depmod，宿主的 kmod 版本不同会写出
+# 7. 集成安装（可选）：把 IoT 服务栈烘焙进 rootfs
+#    必须在「定尺寸」之前 —— 装完会多出几百 MB，尺寸要按最终内容算
+# ---------------------------------------------------------------------------
+mount_chroot() {
+  mountpoint -q "$R/dev"     || mount --bind /dev "$R/dev"
+  mountpoint -q "$R/dev/pts" || mount --bind /dev/pts "$R/dev/pts" 2>/dev/null || true
+  mountpoint -q "$R/proc"    || mount -t proc proc "$R/proc"
+  mountpoint -q "$R/sys"     || mount -t sysfs sys "$R/sys"
+}
+umount_chroot() {
+  umount "$R/dev/pts" 2>/dev/null; umount "$R/dev" 2>/dev/null
+  umount "$R/proc" 2>/dev/null;    umount "$R/sys" 2>/dev/null
+}
+
+if [ "$INTEGRATE" != "none" ]; then
+  log "集成安装：$INTEGRATE（$IOT_STACK）"
+  [ -x "$HERE/integrate-iot.sh" ] || die "找不到 scripts/integrate-iot.sh"
+  mount_chroot
+  # integrate-iot.sh 自己也会检查挂载点，这里的挂载是幂等的
+  bash "$HERE/integrate-iot.sh" "$R" \
+    --stack="${IOT_STACK:-node-red,mosquitto}" \
+    --mqtt-user="${IOT_MQTT_USER:-user-mqtt}" \
+    --mqtt-pass="${IOT_MQTT_PASS:-Ab123456}" \
+    --mqtt-port="${IOT_MQTT_PORT:-1883}" \
+    --ws-port="${IOT_WS_PORT:-8083}" \
+    --nodered-port="${IOT_NODERED_PORT:-1880}" \
+    --z2m-port="${IOT_Z2M_PORT:-8080}" \
+    --coord="${IOT_COORD:-}" \
+    --adapter="${IOT_ADAPTER:-zstack}" \
+    --node-version="${IOT_NODE_VERSION:-22}" \
+    || die "集成安装失败"
+  info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. depmod —— 必须用 rootfs 自带的 depmod，宿主的 kmod 版本不同会写出
 #    不兼容的 modules.dep.bin（症状：能起、串口能登，但 lsmod 空、网卡/音频全哑）
 # ---------------------------------------------------------------------------
 if [ "${SKIP_DEPMOD:-0}" != 1 ]; then
   log "chroot 内执行 depmod（目标 rootfs 自带）"
   [ -x "$R/usr/sbin/depmod" ] || die "rootfs 里没有 /usr/sbin/depmod"
-  mount --bind /dev "$R/dev"; mount --bind /dev/pts "$R/dev/pts" 2>/dev/null || true
-  mount -t proc proc "$R/proc"; mount -t sysfs sys "$R/sys"
+  mount_chroot
   chroot "$R" /usr/sbin/depmod -a "$KERNEL_VER"
-  umount "$R/dev/pts" 2>/dev/null; umount "$R/dev"; umount "$R/proc"; umount "$R/sys"
+  umount_chroot
   [ -s "$R/lib/modules/$KERNEL_VER/modules.dep" ] || die "modules.dep 生成失败"
   info "modules.dep: $(wc -l < "$R/lib/modules/$KERNEL_VER/modules.dep") 条依赖"
 else
@@ -276,7 +314,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. 定尺寸：分区 = 内容 + slack，mkfs 按分区大小 → 首启无需 resize2fs
+# 9. 定尺寸：分区 = 内容 + slack，mkfs 按分区大小 → 首启无需 resize2fs
 # ---------------------------------------------------------------------------
 log "计算分区大小"
 USED_KB=$(du -s -B1K "$R" | cut -f1)
@@ -289,7 +327,7 @@ IMG_BYTES=$(( PART_START_BYTES + PART_BYTES + 1048576 ))   # 尾部留 1 MiB 给
 info "内容 $(numfmt --to=iec "$USED_BYTES") → 分区 $(numfmt --to=iec "$PART_BYTES")，整镜像 $(numfmt --to=iec "$IMG_BYTES")"
 
 # ---------------------------------------------------------------------------
-# 9. 拼装
+# 10. 拼装
 # ---------------------------------------------------------------------------
 log "拼装镜像"
 rm -f "$OUT_IMG"
@@ -320,7 +358,7 @@ sgdisk -v "$OUT_IMG" | tail -3
 info "分区 1 起点 LBA $(sgdisk -i 1 "$OUT_IMG" | sed -n 's/^First sector: \([0-9][0-9]*\).*/\1/p')"
 
 # ---------------------------------------------------------------------------
-# 10. 校验
+# 11. 校验
 # ---------------------------------------------------------------------------
 log "校验"
 # 把本次真正生效的值固化成一份 conf 交给校验脚本。
@@ -341,6 +379,12 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "SLACK_PCT=$SLACK_PCT"
   echo "CMA=$CMA"
   echo "SELINUX=$SELINUX"
+  echo "INTEGRATE=$INTEGRATE"
+  echo "IOT_STACK=${IOT_STACK:-}"
+  echo "IOT_MQTT_PORT=${IOT_MQTT_PORT:-1883}"
+  echo "IOT_WS_PORT=${IOT_WS_PORT:-8083}"
+  echo "IOT_NODERED_PORT=${IOT_NODERED_PORT:-1880}"
+  echo "IOT_Z2M_PORT=${IOT_Z2M_PORT:-8080}"
 } > "$RESOLVED"
 BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
 

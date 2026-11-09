@@ -76,6 +76,40 @@ echo "-- 挂载表"
 chk "fstab 根挂载用 UUID=$ROOT_UUID"     "grep -qE '^UUID=$ROOT_UUID[[:space:]]+/[[:space:]]' '$MP/etc/fstab'"
 chk "fstab 无 /boot/efi 残留"           "! grep -q '/boot/efi' '$MP/etc/fstab'"
 
+# --- IoT 服务栈（仅 INTEGRATE != none 时检查）-----------------------------
+if [ "${INTEGRATE:-none}" != "none" ]; then
+  echo "-- IoT 服务栈（$IOT_STACK）"
+  case ",${IOT_STACK:-}," in
+    *",mosquitto,"*)
+      chk "mosquitto 可执行"                 "[ -x '$MP/usr/sbin/mosquitto' ] || [ -x '$MP/usr/bin/mosquitto' ]"
+      chk "mosquitto 支持 WebSocket"          "grep -aq 'libwebsockets\.so' '$MP/usr/sbin/mosquitto'"
+      chk "mosquitto 密码文件 600"            "[ \"\$(stat -c %a '$MP/etc/mosquitto/passwd')\" = 600 ]"
+      chk "listener ${IOT_MQTT_PORT:-1883}"   "grep -q 'listener ${IOT_MQTT_PORT:-1883}' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
+      chk "listener ${IOT_WS_PORT:-8083} ws"  "grep -q 'listener ${IOT_WS_PORT:-8083}' '$MP/etc/mosquitto/conf.d/zigbee2mqtt.conf'"
+      chk "mosquitto 开机自启"                "[ -L '$MP/etc/systemd/system/multi-user.target.wants/mosquitto.service' ]"
+      ;;
+  esac
+  case ",${IOT_STACK:-}," in
+    *",node-red,"*)
+      chk "node 可执行"                      "[ -x '$MP/usr/local/bin/node' ]"
+      chk "node-red 可执行"                  "[ -x '$MP/usr/local/bin/node-red' ]"
+      chk "node-red.service 存在"            "[ -f '$MP/etc/systemd/system/node-red.service' ]"
+      chk "node-red 开机自启"                "[ -L '$MP/etc/systemd/system/multi-user.target.wants/node-red.service' ]"
+      chk "node-red 非 root 运行"            "grep -qE '^User=nodered' '$MP/etc/systemd/system/node-red.service'"
+      ;;
+  esac
+  case ",${IOT_STACK:-}," in
+    *",z2m,"*)
+      chk "z2m dist/index.js 已构建"          "[ -f '$MP/opt/zigbee2mqtt/dist/index.js' ]"
+      chk "z2m configuration.yaml"            "[ -f '$MP/opt/zigbee2mqtt/data/configuration.yaml' ]"
+      chk "z2m 前端端口 ${IOT_Z2M_PORT:-8080}" "grep -q 'port: ${IOT_Z2M_PORT:-8080}' '$MP/opt/zigbee2mqtt/data/configuration.yaml'"
+      chk "z2m 开机自启"                      "[ -L '$MP/etc/systemd/system/multi-user.target.wants/zigbee2mqtt.service' ]"
+      ;;
+  esac
+  chk "/etc/iot-stack.env 已写入"           "[ -f '$MP/etc/iot-stack.env' ]"
+  chk "无 dnf 缓存残留"                     "[ ! -d '$MP/var/cache/dnf' ] || [ -z \"\$(ls -A '$MP/var/cache/dnf' 2>/dev/null)\" ]"
+fi
+
 umount "$MP"
 echo
 if [ "$FAIL" -eq 0 ]; then

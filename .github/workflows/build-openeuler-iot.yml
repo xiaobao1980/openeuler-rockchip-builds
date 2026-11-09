@@ -1,0 +1,309 @@
+name: Build openEuler IoT Image (Node-RED + Mosquitto + Zigbee2MQTT)
+
+# ============================================================================
+# 「集成安装」流程：在 build-openeuler.yml 的拼装基础上，多烘焙一层 IoT 服务栈。
+#
+# 与 build-openeuler.yml 的分工：
+#   build-openeuler.yml      批量矩阵，产出「纯净 openEuler 用户态」镜像
+#   build-openeuler-iot.yml  单板深度定制，产出「开箱即用」的 IoT 网关镜像
+# 两者共用同一套 scripts/，不重复实现拼装逻辑（避免两份实现漂移）。
+#
+# 参考实现在 iot/install_nodered_z2m_ubuntu24_v3.5.sh，但那版是给已运行的
+# Ubuntu 做在线安装（apt + PM2 + $HOME 路径）。烧进镜像必须换三样东西：
+#   ① dnf 取代 apt，且 mosquitto 只在 EPOL 仓
+#   ② systemd 取代 PM2（sealed 镜像没有「用户登录」这回事，PM2 的 resurrect
+#      依赖 /home 下的 dump，属于自找麻烦）
+#   ③ FHS 固定路径 /var/lib/{node-red,zigbee2mqtt}，服务以系统用户运行而非 root
+#
+# 为什么必须 arm64 原生 runner：chroot 里要跑 dnf / npm / tsc，全部是原生二进制。
+# x86 + qemu-user 能跑但慢一个数量级且 node-gyp 类原生模块容易崩。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "板卡 id（需已有 boot-assets Release）"
+        type: string
+        required: true
+        default: "h96-m9"
+      oe_version:
+        description: "openEuler 版本"
+        type: choice
+        required: true
+        default: 24.03-LTS-SP4
+        options:
+          - 24.03-LTS-SP4
+          - 24.03-LTS-SP3
+          - 24.03-LTS-SP2
+          - 24.03-LTS
+      stack:
+        description: "集成组件"
+        type: choice
+        required: true
+        default: "node-red,mosquitto"
+        options:
+          - "node-red,mosquitto"
+          - "node-red,mosquitto,z2m"
+          - "mosquitto"
+          - "node-red"
+      zigbee_coord:
+        description: "Zigbee 协调器（空=首启手工配；tcp://IP:8888 或 /dev/ttyUSB0）"
+        type: string
+        required: false
+        default: ""
+      zigbee_adapter:
+        description: "Z2M 适配器类型"
+        type: choice
+        required: false
+        default: zstack
+        options:
+          - zstack
+          - ember
+          - ezsp
+          - deconz
+      mqtt_user:
+        description: "MQTT 用户名"
+        type: string
+        required: false
+        default: user-mqtt
+      mqtt_pass:
+        description: "MQTT 密码（默认值仅供验证，上板后请改）"
+        type: string
+        required: false
+        default: Ab123456
+      node_version:
+        description: "Node.js 主版本"
+        type: string
+        required: false
+        default: "22"
+      selinux:
+        description: "SELinux（集成安装会写大量文件，首次必须 disabled）"
+        type: choice
+        required: true
+        default: disabled
+        options:
+          - disabled
+          - permissive
+          - enforcing
+      cma_override:
+        description: "覆盖 CMA（留空=按 SoC 自动）"
+        type: string
+        required: false
+        default: ""
+      root_password:
+        description: "root 密码"
+        type: string
+        required: false
+        default: openeuler
+      publish_release:
+        description: "构建成功后发布到 GitHub Releases"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ inputs.board }} + ${{ inputs.stack }}
+    runs-on: ubuntu-24.04-arm
+    # 集成安装要 dnf + npm + tsc，比纯拼装慢得多：Z2M 构建单独就要 8-12 分钟
+    timeout-minutes: 120
+    env:
+      BOARD: ${{ inputs.board }}
+      OE_VER: ${{ inputs.oe_version }}
+      SELINUX_MODE: ${{ inputs.selinux }}
+      CMA_OVERRIDE: ${{ inputs.cma_override }}
+      ROOT_PW: ${{ inputs.root_password }}
+      INTEGRATE: iot
+      IOT_STACK: ${{ inputs.stack }}
+      IOT_MQTT_USER: ${{ inputs.mqtt_user }}
+      IOT_MQTT_PASS: ${{ inputs.mqtt_pass }}
+      IOT_COORD: ${{ inputs.zigbee_coord }}
+      IOT_ADAPTER: ${{ inputs.zigbee_adapter }}
+      IOT_NODE_VERSION: ${{ inputs.node_version }}
+      IOT_MQTT_PORT: "1883"
+      IOT_WS_PORT: "8083"
+      IOT_NODERED_PORT: "1880"
+      IOT_Z2M_PORT: "8080"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构断言
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          echo "runner: $arch / $(nproc) core / $(free -g | awk '/Mem:/{print $2}')G RAM / $(df -h / | awk 'NR==2{print $4}') free"
+          [ "$arch" = aarch64 ] || { echo "::error::需要 aarch64 runner（chroot 内要原生跑 dnf/npm）"; exit 1; }
+
+      - name: 腾磁盘（集成后峰值约 12G，arm runner 默认只有 14G）
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 安装依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # lvm2: openEuler 整机镜像根分区在 LVM 里；parted: partprobe
+          sudo apt-get install -y -qq --no-install-recommends \
+            xz-utils zstd e2fsprogs gdisk parted lvm2 rsync qemu-utils jq
+          for t in xz zstd mkfs.ext4 sgdisk partprobe vgchange rsync qemu-img jq od; do
+            printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+          done
+
+      - name: 解析板级配置
+        id: cfg
+        run: |
+          set -euo pipefail
+          bash scripts/board-resolve.sh "$BOARD" > /tmp/board.conf
+          # shellcheck disable=SC1091
+          . /tmp/board.conf
+
+          # 与 build-openeuler.yml 同样按前缀发现 Release，不拼死 tag
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                --jq '.[].tagName' | grep -E "^boot-${BOARD}-" | head -1 || true)
+          if [ -z "$TAG" ]; then
+            AVAIL=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                    --jq '.[].tagName' | grep -E '^boot-' | tr '\n' ' ' || true)
+            echo "::error::$BOARD 没有 boot 资产 Release（期望 boot-${BOARD}-*）。"
+            echo "::error::先跑 publish-boot-assets.yml。现有：${AVAIL:-（无）}"
+            exit 1
+          fi
+          echo "boot 资产：$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "soc=$FAMILY" >> "$GITHUB_OUTPUT"
+          echo "dtb=$DTB" >> "$GITHUB_OUTPUT"
+          {
+            echo "### \`$BOARD\` — $MODEL"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| SoC | $FAMILY |"
+            echo "| DTB | \`$DTB\` |"
+            echo "| boot 资产 | \`$TAG\` |"
+            echo "| 集成组件 | \`${IOT_STACK}\` |"
+            echo "| Node.js | ${IOT_NODE_VERSION}.x |"
+            echo "| 协调器 | ${IOT_COORD:-未配置} |"
+            echo "| SELinux | ${SELINUX_MODE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 下载 boot 资产
+        run: |
+          set -euo pipefail
+          mkdir -p in
+          gh release download "${{ steps.cfg.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'boot-*.tar.zst*' --dir in
+          ls -lh in/
+          TAR=$(ls in/boot-*.tar.zst | awk 'NR==1')
+          if [ -f "$TAR.sha256" ]; then ( cd in && sha256sum -c "$(basename "$TAR").sha256" ); fi
+          echo "BOOT_TAR=$TAR" >> "$GITHUB_ENV"
+
+      - name: 下载 openEuler 整机镜像
+        run: |
+          set -euo pipefail
+          BASE="https://dl-cdn.openeuler.openatom.cn/openEuler-${OE_VER}/virtual_machine_img/aarch64"
+          F="openEuler-${OE_VER}-aarch64.qcow2.xz"
+          mkdir -p in
+          echo "下载 $BASE/$F"
+          curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$BASE/$F"
+          curl -fsSL -o "in/$F.sha256sum" "$BASE/$F.sha256sum" || true
+          if [ -s "in/$F.sha256sum" ]; then
+            ( cd in && sha256sum -c "$F.sha256sum" ) || { echo "::error::校验失败"; exit 1; }
+          fi
+          ls -lh "in/$F"
+          echo "OE_XZ=in/$F" >> "$GITHUB_ENV"
+
+      - name: 拼装 + 集成安装
+        run: |
+          set -euo pipefail
+          # sudo -E：需要把 IOT_* 一整组变量带进 root 环境，否则 build-image.sh
+          # 读不到 stack/端口/协调器，会静默退回「什么都不装」
+          sudo -E bash scripts/build-image.sh "$BOOT_TAR" "$OE_XZ" "$GITHUB_WORKSPACE/out.img"
+
+      - name: 服务栈摘要
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+          . work/board.resolved.conf
+          {
+            echo "### 镜像内服务（首启即生效）"
+            echo ""
+            echo "| 服务 | 端口 | 管理 |"
+            echo "|---|---|---|"
+            case ",${IOT_STACK}," in
+              *",mosquitto,"*) echo "| Mosquitto MQTT | ${IOT_MQTT_PORT} | \`systemctl status mosquitto\` |" ;;
+            esac
+            case ",${IOT_STACK}," in
+              *",mosquitto,"*) echo "| Mosquitto WebSocket | ${IOT_WS_PORT} | ws://<IP>:${IOT_WS_PORT} |" ;;
+            esac
+            case ",${IOT_STACK}," in
+              *",node-red,"*) echo "| Node-RED | ${IOT_NODERED_PORT} | \`systemctl status node-red\` |" ;;
+            esac
+            case ",${IOT_STACK}," in
+              *",z2m,"*) echo "| Zigbee2MQTT 前端 | ${IOT_Z2M_PORT} | \`systemctl status zigbee2mqtt\` |" ;;
+            esac
+            echo ""
+            echo "MQTT 账号：\`${IOT_MQTT_USER}\`　协调器：\`${IOT_COORD:-未配置}\`"
+            echo ""
+            echo "> Zigbee2MQTT 在协调器就绪前会反复重启，属正常；配好 \`/opt/zigbee2mqtt/data/configuration.yaml\` 后 \`systemctl restart zigbee2mqtt\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 压缩与校验和
+        id: pack
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          # 内核版本取自 build-image.sh 落盘的 resolved conf（以 boot 资产为准）
+          KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
+          echo "实际内核: $KVER"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          NAME="openEuler-${OE_VER}-${BOARD}-iot-${KVER%%-*}-${DATE}.img"
+          mv out.img "$NAME"
+          echo "大小: $(du -h "$NAME" | cut -f1)"
+          xz -T0 -6 "$NAME"
+          sha256sum "$NAME.xz" > "$NAME.xz.sha256"
+          ls -lh "$NAME.xz"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openEuler-iot-${{ inputs.board }}
+          path: |
+            *.img.xz
+            *.sha256
+          retention-days: 14
+
+      - name: 发布 Release
+        if: ${{ success() && inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          TAG="${BOARD}-iot-${DATE}-r${GITHUB_RUN_NUMBER}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./*.img.xz ./*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" ./*.img.xz ./*.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "openEuler ${OE_VER} ${BOARD} IoT ${DATE} #${GITHUB_RUN_NUMBER}" \
+              --notes "openEuler ${OE_VER} + Armbian vendor 内核（${{ steps.pack.outputs.kver }}）+ 预装 IoT 栈
+          板卡：\`${BOARD}\`　SoC：${{ steps.cfg.outputs.soc }}　DTB：\`${{ steps.cfg.outputs.dtb }}\`
+          集成：\`${IOT_STACK}\`　Node.js ${IOT_NODE_VERSION}.x　SELinux ${SELINUX_MODE}　CMA ${CMA_OVERRIDE:-auto}
+
+          ### 烧写
+          \`\`\`
+          xz -dc ${BOARD}-iot-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+          \`\`\`
+
+          ### 首启
+          - 串口 \`1500000 8N1\` 应看到 U-Boot → extlinux → systemd
+          - 登录后 \`passwd\` 改密码，并改 MQTT 密码：\`mosquitto_passwd -b /etc/mosquitto/passwd user-mqtt <新密码>\`
+          - 用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`"
+          fi
+          echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
