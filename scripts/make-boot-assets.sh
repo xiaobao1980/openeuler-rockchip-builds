@@ -131,7 +131,7 @@ if [ ! -d "$SYSROOT/lib/modules/$KERNEL_VER" ]; then
   fi
 fi
 
-B="$OUT_DIR/stage/boot"
+B="$OUT_DIR/stage/asset"
 rm -rf "$B"; mkdir -p "$B/boot/dtb/rockchip" "$B/boot/extlinux" "$B/lib/modules"
 # Armbian 的 /boot/Image 几乎总是指向 vmlinuz-<ver> 的符号链接。必须 -L 解引用，
 # 否则资产里存的是悬空链接（目标文件根本没被复制），镜像装到板上必然起不来。
@@ -160,6 +160,8 @@ cp -a "$SYSROOT/lib/modules/$KERNEL_VER" "$B/lib/modules/"
 
 umount "$MNT/ro"; SYSROOT=""
 [ "$MODE" = image ] && rm -f "$OUT_DIR/stage/armbian.img"
+# bootloader 放到资产根：最终布局 = bootloader-16M.bin + boot/ + lib/
+mv -f "$OUT_DIR/stage/bootloader-16M.bin" "$B/bootloader-16M.bin"
 
 # --- 3. 记录清单，便于回溯 ------------------------------------------------
 log "生成清单"
@@ -171,7 +173,7 @@ log "生成清单"
   echo "built_at=$(date -u +%FT%TZ)"
   echo "source=$MODE:$SRC"
   echo "--- bootloader sha256 ---"
-  sha256sum "$OUT_DIR/stage/bootloader-16M.bin" | awk '{print $1}'
+  sha256sum "$B/bootloader-16M.bin" | awk '{print $1}'
   echo "--- files ---"
   ( cd "$B" && find . -type f -printf '%s\t%p\n' | sort -k2 )
 } > "$B/MANIFEST.txt"
@@ -181,8 +183,10 @@ head -12 "$B/MANIFEST.txt"
 # --- 4. 打包 --------------------------------------------------------------
 TAR="$OUT_DIR/boot-${BOARD_ID}-${KERNEL_VER%%-*}.tar.zst"
 log "打包 $TAR"
+# -C "$B"：资产根就是 bootloader-16M.bin + boot/ + lib/ 三层，
+# 之前 -C stage 会把路径写成 boot/boot/Image（多一层 boot），下游全部对不上
 tar --numeric-owner -I 'zstd -19 -T0 --long=27' -cf "$TAR" \
-    -C "$OUT_DIR/stage" bootloader-16M.bin boot
+    -C "$B" bootloader-16M.bin boot lib MANIFEST.txt
 sha256sum "$TAR" | sed 's| .*/| |' > "$TAR.sha256"
 ls -lh "$TAR" "$TAR.sha256"
 
