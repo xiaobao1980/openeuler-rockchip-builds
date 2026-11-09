@@ -166,9 +166,10 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update -qq
+          # lvm2：openEuler 整机镜像根分区在 LVM 里，缺 vgchange 根本无法挂载
           sudo apt-get install -y -qq --no-install-recommends \
-            xz-utils zstd e2fsprogs gdisk rsync qemu-utils jq
-          for t in xz zstd mkfs.ext4 sgdisk rsync qemu-img jq od; do
+            xz-utils zstd e2fsprogs gdisk parted lvm2 rsync qemu-utils jq
+          for t in xz zstd mkfs.ext4 sgdisk partprobe vgchange rsync qemu-img jq od; do
             printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
           done
 

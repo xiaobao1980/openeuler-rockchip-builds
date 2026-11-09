@@ -56,6 +56,7 @@ cleanup() {
   umount "$R/dev/pts" 2>/dev/null; umount "$R/dev" 2>/dev/null
   umount "$R/proc" 2>/dev/null;    umount "$R/sys" 2>/dev/null
   umount "$MNT_OE" 2>/dev/null
+  command -v vgchange >/dev/null 2>&1 && vgchange -an >/dev/null 2>&1
   [ -n "$LOOP_OE"  ] && losetup -d "$LOOP_OE" 2>/dev/null
   [ -n "$LOOP_OUT" ] && losetup -d "$LOOP_OUT" 2>/dev/null
 }
@@ -136,15 +137,26 @@ else
 fi
 
 log "定位 openEuler 根分区"
-LOOP_OE=$(losetup --find --show --partscan "$OE_RAW")
+LOOP_OE=$(losetup --find --show --partscan "$OE_RAW") || die "losetup 失败"
+partprobe "$LOOP_OE" 2>/dev/null || true
+sleep 1
+
+# openEuler 官方整机镜像默认走 LVM：p1=/boot(ext4)、p2=LVM PV → /dev/openeuler/root。
+# 未激活时 lsblk 对 PV 的 FSTYPE 是空的，按 FSTYPE 挑分区必然挑不到，所以：
+#   ① 先 vgchange -ay 激活；② 再按「试挂载 + 看 /etc/os-release」判定，不猜类型。
+if command -v vgchange >/dev/null 2>&1; then
+  vgchange -ay >/dev/null 2>&1 || true
+fi
+
 mkdir -p "$MNT_OE"
 ROOTDEV=""
-for p in $(lsblk -lnpo NAME,FSTYPE "$LOOP_OE" | awk '$2=="ext4"||$2=="xfs"{print $1}'); do
+CANDS=$( { lsblk -lnpo NAME,FSTYPE "$LOOP_OE" | awk '$2!=""{print $1}'; ls /dev/mapper/* 2>/dev/null; } | awk '!seen[$0]++' )
+for p in $CANDS; do
   mount -o ro "$p" "$MNT_OE" 2>/dev/null || continue
   if grep -qs '^ID="*openEuler' "$MNT_OE/etc/os-release"; then ROOTDEV="$p"; break; fi
-  umount "$MNT_OE"
+  umount "$MNT_OE" 2>/dev/null
 done
-[ -n "$ROOTDEV" ] || die "qcow2 里没找到 openEuler 根分区。实际分区：$(lsblk -lnpo NAME,SIZE,FSTYPE "$LOOP_OE" | tr '\n' ' ')"
+[ -n "$ROOTDEV" ] || die "qcow2 里没找到 openEuler 根分区。分区：$(lsblk -lnpo NAME,SIZE,FSTYPE "$LOOP_OE" | tr '\n' ' ')| mapper：$(ls /dev/mapper 2>/dev/null | tr '\n' ' ')"
 info "根分区: $ROOTDEV ($(findmnt -no SIZE --target "$MNT_OE" 2>/dev/null || echo '?'))"
 info "$(grep -E '^(PRETTY_NAME|VERSION_ID)=' "$MNT_OE/etc/os-release" | tr '\n' ' ')"
 
