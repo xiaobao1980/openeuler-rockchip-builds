@@ -75,8 +75,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            xz-utils zstd e2fsprogs gdisk rsync jq
-          for t in xz zstd sgdisk losetup; do
+            xz-utils zstd e2fsprogs gdisk parted rsync jq
+          for t in xz zstd sgdisk losetup partprobe; do
             printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
           done
 

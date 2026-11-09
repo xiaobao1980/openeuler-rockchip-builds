@@ -58,13 +58,38 @@ done
 mkdir -p "$OUT_DIR/stage"
 
 # --- 1. 取出前 16 MiB（MBR + GPT + idbloader + u-boot.itb）------------------
+# 找根分区：不按文件系统类型猜。Armbian 不同版本/分支给的是 ext4、xfs、btrfs 都有，
+# 只看 FSTYPE=="ext4" 会在非 ext4 的镜像上直接失败。改为逐个试挂、看 /etc/os-release。
+find_root_part() {
+  local dev="$1" p
+  local cands
+  cands=$(lsblk -lnpo NAME,FSTYPE "$dev" | awk '$2!=""{print $1}')
+  [ -n "$cands" ] || return 1
+  for p in $cands; do
+    mkdir -p "$MNT/ro"
+    if mount -o ro "$p" "$MNT/ro" 2>/dev/null; then
+      if [ -f "$MNT/ro/etc/os-release" ]; then
+        printf '%s\n' "$p"
+        return 0
+      fi
+      umount "$MNT/ro" 2>/dev/null
+    fi
+  done
+  return 1
+}
+
+dump_layout() {
+  printf '\033[1;33m    实际布局：\033[0m\n' >&2
+  lsblk -lnpo NAME,SIZE,FSTYPE "$1" 2>/dev/null | sed 's/^/      /' >&2 || true
+  sgdisk -p "$1" 2>/dev/null | sed 's/^/      /' >&2 || true
+}
+
 log "抽取 bootloader 区（前 ${BOOTLOADER_BYTES} 字节）"
 if [ "$MODE" = dev ]; then
   [ -b "$SRC" ] || die "$SRC 不是块设备"
   dd if="$SRC" of="$OUT_DIR/stage/bootloader-16M.bin" bs=512 count=$((BOOTLOADER_BYTES / 512)) status=none
-  ROOTDEV="$(lsblk -lnpo NAME,FSTYPE "$SRC" | awk '$2=="ext4"{print $1; exit}')"
-  [ -n "$ROOTDEV" ] || die "在 $SRC 上找不到 ext4 分区"
-  SYSROOT=""
+  ROOTDEV="$(find_root_part "$SRC")"
+  [ -n "$ROOTDEV" ] || { dump_layout "$SRC"; die "在 $SRC 上找不到含 /etc/os-release 的分区"; }
   mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
 else
@@ -74,10 +99,13 @@ else
     *)    cp --reflink=auto "$IMG" "$OUT_DIR/stage/armbian.img" ;;
   esac
   IMG="$OUT_DIR/stage/armbian.img"
+  info_sz=$(du -h "$IMG" | cut -f1)
+  printf '    解压后大小: %s\n' "$info_sz"
   dd if="$IMG" of="$OUT_DIR/stage/bootloader-16M.bin" bs=512 count=$((BOOTLOADER_BYTES / 512)) status=none
   LOOP=$(losetup --find --show --partscan "$IMG")
-  ROOTDEV="$(lsblk -lnpo NAME,FSTYPE "$LOOP" | awk '$2=="ext4"{print $1; exit}')"
-  [ -n "$ROOTDEV" ] || die "镜像里找不到 ext4 分区"
+  partprobe "$LOOP" 2>/dev/null || true
+  ROOTDEV="$(find_root_part "$LOOP")"
+  [ -n "$ROOTDEV" ] || { dump_layout "$LOOP"; die "镜像里找不到含 /etc/os-release 的分区"; }
   mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
 fi
