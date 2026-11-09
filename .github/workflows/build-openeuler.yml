@@ -90,10 +90,12 @@ jobs:
           SEL: ${{ inputs.boards }}
         run: |
           set -euo pipefail
+          # 清单 = boards.tsv（上游同步）+ boards/<id>/board.conf（手写自定义板）
+          # 只读 TSV 的话选 h96-m9 会得到 0 块板 —— 它不在 armbian/build 上游里
+          bash scripts/list-boards.sh > /tmp/all.tsv
           list=$(awk -F'\t' -v sel="$SEL" '
-            $1=="board" || $1 ~ /^#/ { next }
-            $6!="OK" { next }
             BEGIN{ n=split(sel, want, ",") }
+            NF < 4 { next }
             {
               hit = 0
               for (i=1;i<=n;i++) {
@@ -103,13 +105,13 @@ jobs:
                 else if (substr(w,1,4) == "soc:" && substr(w,5) == $3) hit = 1
               }
               if (hit) print $1
-            }' boards/boards.tsv | jq -R . | jq -sc .)
+            }' /tmp/all.tsv | jq -R . | jq -sc .)
           cnt=$(printf '%s' "$list" | jq 'length')
           echo "matrix={\"board\":$list}" >> "$GITHUB_OUTPUT"
           echo "count=$cnt" >> "$GITHUB_OUTPUT"
           echo "选中 $cnt 块：$(printf '%s' "$list" | jq -r 'join(", ")')" | head -c 2000
           if [ "$cnt" -eq 0 ]; then
-            echo "::error::没有匹配的板卡。检查输入 '$SEL'，或该板 status 不是 OK（缺 DTB）。"
+            echo "::error::没有匹配的板卡。检查输入 '$SEL'。可用：bash scripts/list-boards.sh"
             exit 1
           fi
 
@@ -117,7 +119,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boards-list
-          path: boards/boards.tsv
+          path: |
+            boards/boards.tsv
+            /tmp/all.tsv
           retention-days: 7
 
   # ---------------------------------------------------------------------------
