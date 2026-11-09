@@ -102,15 +102,20 @@ on:
         required: false
         default: ""
       admin_user:
-        description: "非 root 管理员账号（逗号/空格分隔可多个，日常登这些，sudo 需密码）"
+        description: "非 root 管理员账号（逗号/空格分隔可多个；留空=不创建默认管理员，只留 root）"
         type: string
         required: false
-        default: openeuler
+        default: ""
       admin_pw:
-        description: "管理员账号密码"
+        description: "管理员账号密码（多个账号统一用此密码）"
         type: string
         required: false
         default: openeuler
+      user_groups:
+        description: "管理员附加组（逗号/空格分隔；留空=仅 wheel，sudo 经 %wheel）"
+        type: string
+        required: false
+        default: ""
       ssh_pubkey:
         description: "root SSH 公钥（传入则只允许密钥登录、关闭 root 密码）"
         type: string
@@ -140,6 +145,7 @@ jobs:
       IOT_NODERED_NODES: ${{ inputs.node_red_nodes }}
       ADMIN_USER: ${{ inputs.admin_user }}
       ADMIN_PW: ${{ inputs.admin_pw }}
+      ADMIN_GROUPS: ${{ inputs.user_groups }}
       SSH_PUBKEY: ${{ inputs.ssh_pubkey }}
       INTEGRATE: iot
       IOT_STACK: ${{ inputs.stack }}
@@ -277,7 +283,9 @@ jobs:
             esac
             echo ""
             echo "MQTT 账号：\`${IOT_MQTT_USER}\`　协调器：\`${IOT_COORD:-未配置}\`"
-            echo "管理员账号：\`${ADMIN_USER:-openeuler}\`（sudo 需密码，日常登这些而非 root）"
+            _ADMIN_DISP="${ADMIN_USER:-<未创建，仅 root>}"
+            [ -z "${ADMIN_USER:-}" ] && _ADMIN_DISP="<未创建，仅 root>"
+            echo "管理员账号：\`${_ADMIN_DISP}\`（sudo 需密码，日常登这些而非 root）"
             echo ""
             echo "> Zigbee2MQTT 在协调器就绪前会反复重启，属正常；配好 \`/opt/zigbee2mqtt/data/configuration.yaml\` 后 \`systemctl restart zigbee2mqtt\`。"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -333,6 +341,6 @@ jobs:
           - 串口 \`1500000 8N1\` 应看到 U-Boot → extlinux → systemd
           - 登录后 \`passwd\` 改密码，并改 MQTT 密码：\`mosquitto_passwd -b /etc/mosquitto/passwd user-mqtt <新密码>\`
           - 用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`
-          - 默认管理员账号 \`${ADMIN_USER:-openeuler}\`（sudo 需密码），日常请登这些账号而非 root"
+          - 默认管理员账号 \`${ADMIN_USER:-<未创建，仅 root>}\`（sudo 需密码），日常请登这些账号而非 root"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

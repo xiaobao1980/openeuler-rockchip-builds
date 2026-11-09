@@ -11,7 +11,8 @@
 #   BOARD_CONF  板级配置（默认 boards/h96-m9/board.conf）
 #   WORK        中间目录（默认 ./work，CI 里建议放 /mnt）
 #   ROOT_PW     root 密码（默认 openeuler）
-#   ADMIN_USER / ADMIN_PW   非 root 管理员账号（逗号/空格分隔可多个，默认 openeuler / 同 ROOT_PW），日常登这些
+#   ADMIN_USER / ADMIN_PW   非 root 管理员账号（逗号/空格分隔可多个；留空=不创建默认管理员，只留 root；统一用 ADMIN_PW）
+#   ADMIN_GROUPS           管理员附加组（逗号/空格分隔，默认 wheel；sudo 经 %wheel）
 #   SSH_PUBKEY              root 的 SSH 公钥；传入则只允许密钥登录、关闭 root 密码
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
@@ -39,8 +40,9 @@ OE_XZ="${2:?缺 openEuler qcow2.xz}"
 OUT_IMG="${3:?缺输出镜像路径}"
 WORK="${WORK:-$HERE/../work}"
 ROOT_PW="${ROOT_PW:-openeuler}"
-ADMIN_USER="${ADMIN_USER:-openeuler}"
+ADMIN_USER="${ADMIN_USER:-}"
 ADMIN_PW="${ADMIN_PW:-$ROOT_PW}"
+ADMIN_GROUPS="${ADMIN_GROUPS:-wheel}"
 SSH_PUBKEY="${SSH_PUBKEY:-}"
 
 # --- CI 覆盖：workflow 的 inputs 落到 board.conf 推导出来的默认值上 -----------
@@ -299,45 +301,68 @@ done
 # 6b. 安全加固：非 root 管理员 + 可选 SSH 公钥
 #     默认 root/openeuler 密码直登只是 bring-up 期方便；长期应登管理员账号、用密钥。
 # ---------------------------------------------------------------------------
-# 1) 非 root 管理员账号（可多个，逗号/空格分隔；日常登这些，需要时才 sudo）
-#    统一用 ADMIN_PW；都进 wheel，sudo 需密码
+# 1) 非 root 管理员账号（可多个，逗号/空格分隔；留空=不创建默认管理员，只留 root）
+#    统一用 ADMIN_PW；都加入 ADMIN_GROUPS（默认 wheel，sudo 需密码）
 IFS=' ,' read -r -a ADMINS <<< "${ADMIN_USER//,/ }"
-if [ "${#ADMINS[@]}" -eq 0 ]; then ADMINS=(openeuler); fi
-_n=0
-# sudoers 兜底：明确放行 wheel（openEuler 自带的可能被注释）—— 一次覆盖所有管理员
-if [ -d "$R/etc/sudoers.d" ]; then
-  printf '%%wheel ALL=(ALL) ALL\n' > "$R/etc/sudoers.d/wheel"
-  chmod 440 "$R/etc/sudoers.d/wheel"
-fi
-# wheel 组缺失则补建
-grep -q '^wheel:' "$R/etc/group" || groupadd -R "$R" wheel 2>/dev/null || true
-for AU in "${ADMINS[@]}"; do
-  [ -z "$AU" ] && continue
-  if ! grep -q "^${AU}:" "$R/etc/passwd"; then
-    useradd -R "$R" -m -s /bin/bash "$AU" 2>/dev/null \
-      || useradd -m -s /bin/bash "$AU" 2>/dev/null
-    # 兜底：直接写账号库（useradd -R 在精简环境可能不可用），UID 自增避免多账号冲突
-    grep -q "^${AU}:" "$R/etc/passwd" || {
-      _UID=$((1000 + _n)); _n=$((_n + 1))
-      echo "${AU}:x:${_UID}:${_UID}::/home/${AU}:/bin/bash" >> "$R/etc/passwd"
-      grep -q "^${AU}:" "$R/etc/group" || echo "${AU}:x:${_UID}:" >> "$R/etc/group"
-      mkdir -p "$R/home/${AU}"; chmod 750 "$R/home/${AU}"
-    }
+if [ "${#ADMINS[@]}" -gt 0 ] && [ -n "${ADMINS[0]}" ]; then
+  _n=0
+  # sudoers 兜底：明确放行 wheel（openEuler 自带的可能被注释）—— 一次覆盖所有管理员
+  if [ -d "$R/etc/sudoers.d" ]; then
+    printf '%%wheel ALL=(ALL) ALL\n' > "$R/etc/sudoers.d/wheel"
+    chmod 440 "$R/etc/sudoers.d/wheel"
   fi
-  # 设密码（写 shadow 哈希，绕开 PAM/SELinux）
-  if command -v openssl >/dev/null; then
-    AH=$(openssl passwd -6 "$ADMIN_PW")
-    awk -F: -v u="$AU" -v h="$AH" 'BEGIN{OFS=":"} $1==u{ $2=h } {print}' "$R/etc/shadow" > "$R/etc/shadow.new"
-    if ! grep -q "^${AU}:" "$R/etc/shadow"; then
-      echo "${AU}:${AH}:18000:0:99999:7:::" >> "$R/etc/shadow.new"
+  AG="${ADMIN_GROUPS//,/ }"
+  for AU in "${ADMINS[@]}"; do
+    [ -z "$AU" ] && continue
+    if ! grep -q "^${AU}:" "$R/etc/passwd"; then
+      useradd -R "$R" -m -s /bin/bash "$AU" 2>/dev/null \
+        || useradd -m -s /bin/bash "$AU" 2>/dev/null
+      # 兜底：直接写账号库（useradd -R 在精简环境可能不可用），UID 自增避免多账号冲突
+      grep -q "^${AU}:" "$R/etc/passwd" || {
+        _UID=$((1000 + _n)); _n=$((_n + 1))
+        echo "${AU}:x:${_UID}:${_UID}::/home/${AU}:/bin/bash" >> "$R/etc/passwd"
+        grep -q "^${AU}:" "$R/etc/group" || echo "${AU}:x:${_UID}:" >> "$R/etc/group"
+        mkdir -p "$R/home/${AU}"; chmod 750 "$R/home/${AU}"
+      }
     fi
-    mv "$R/etc/shadow.new" "$R/etc/shadow"; chmod 000 "$R/etc/shadow"
-  fi
-  # 加入 wheel（openEuler 的 sudo 默认放行 %wheel）
-  usermod -R "$R" -aG wheel "$AU" 2>/dev/null \
-    || sed -i -E "s/^(wheel:[^:]*:[^:]*:)/\\1${AU}/" "$R/etc/group" 2>/dev/null || true
-done
-info "已建管理员账号：$(IFS=,; echo "${ADMINS[*]}")（sudo 需密码），日常登这些而非 root"
+    # 设密码（写 shadow 哈希，绕开 PAM/SELinux）
+    if command -v openssl >/dev/null; then
+      AH=$(openssl passwd -6 "$ADMIN_PW")
+      awk -F: -v u="$AU" -v h="$AH" 'BEGIN{OFS=":"} $1==u{ $2=h } {print}' "$R/etc/shadow" > "$R/etc/shadow.new"
+      if ! grep -q "^${AU}:" "$R/etc/shadow"; then
+        echo "${AU}:${AH}:18000:0:99999:7:::" >> "$R/etc/shadow.new"
+      fi
+      mv "$R/etc/shadow.new" "$R/etc/shadow"; chmod 000 "$R/etc/shadow"
+    fi
+    # 加入 ADMIN_GROUPS（每个组：缺失则建；usermod 失败则 sed 直写，保留既有成员、逗号分隔）
+    for g in $AG; do
+      [ -z "$g" ] && continue
+      if ! grep -q "^${g}:" "$R/etc/group"; then
+        if ! groupadd -R "$R" "$g" 2>/dev/null; then
+          _GID=$(( $(awk -F: 'BEGIN{m=99} $3>m{m=$3} END{print m}' "$R/etc/group") + 1 ))
+          echo "${g}:x:${_GID}:" >> "$R/etc/group"
+        fi
+      fi
+      if ! usermod -R "$R" -aG "$g" "$AU" 2>/dev/null; then
+        if grep -Eq "^${g}:.*(^|,)${AU}(,|$)" "$R/etc/group"; then
+          :  # 已在组内，跳过
+        elif grep -q "^${g}:[^:]*:[^:]*:$" "$R/etc/group"; then
+          sed -i -E "s/^(${g}:[^:]*:[^:]*:)$/\\1${AU}/" "$R/etc/group"
+        else
+          sed -i -E "s/^(${g}:[^:]*:[^:]*:[^:]*)$/\\1,${AU}/" "$R/etc/group"
+        fi
+      fi
+    done
+  done
+  _ALIST=$(IFS=,; echo "${ADMINS[*]}")
+  _GLIST=$(echo "$AG" | tr ' ' ',')
+  # 注意：set -u 下 bash 对“含中文的双引号串 + 命令替换变量内插”有 unbound 误报，
+  # 故把动态变量拼在双引号之外，再整体传给 info（已验证稳定）。
+  _MSG="已建管理员账号："$_ALIST"（组："$_GLIST"，sudo 需密码），日常登这些而非 root"
+  info "$_MSG"
+else
+  info "未配置管理员账号（admin_user 留空）：只保留 root，建议上板后手动建账号"
+fi
 
 # 2) SSH 公钥（可选）：传入则只允许密钥登录，关闭 root 密码
 if [ -n "$SSH_PUBKEY" ]; then
@@ -489,7 +514,7 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "IOT_NODERED_PORT=${IOT_NODERED_PORT:-1880}"
   echo "IOT_Z2M_PORT=${IOT_Z2M_PORT:-8080}"
 } > "$RESOLVED"
-ADMIN_USER="$ADMIN_USER" BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
+ADMIN_USER="$ADMIN_USER" ADMIN_GROUPS="$ADMIN_GROUPS" BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
 
 # 被 sudo 调用时把产物交还给调用者。否则 out.img 属 root:root，后续非 root 的
 # xz -6 会报 "Cannot set the file group: Operation not permitted" 直接失败。
