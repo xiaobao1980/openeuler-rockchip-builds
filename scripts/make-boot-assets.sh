@@ -133,7 +133,10 @@ fi
 
 B="$OUT_DIR/stage/boot"
 rm -rf "$B"; mkdir -p "$B/boot/dtb/rockchip" "$B/boot/extlinux" "$B/lib/modules"
-cp -a "$SYSROOT/boot/Image" "$B/boot/"
+# Armbian 的 /boot/Image 几乎总是指向 vmlinuz-<ver> 的符号链接。必须 -L 解引用，
+# 否则资产里存的是悬空链接（目标文件根本没被复制），镜像装到板上必然起不来。
+cp -aL "$SYSROOT/boot/Image" "$B/boot/Image"
+[ -f "$B/boot/Image" ] && [ -s "$B/boot/Image" ] || die "解引用 Image 失败（原路径 $SYSROOT/boot/Image）"
 # dtb 可能在 /boot/dtb/rockchip/ 也可能在 /boot/dtb/ 根
 for d in "$SYSROOT/boot/dtb/rockchip/$DTB" "$SYSROOT/boot/dtb/$DTB" "$SYSROOT/boot/$DTB"; do
   [ -f "$d" ] && { cp -a "$d" "$B/boot/dtb/rockchip/"; break; }

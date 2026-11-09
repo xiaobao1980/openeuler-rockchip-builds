@@ -163,7 +163,10 @@ log "替换内核与模块"
 rm -rf "${R:?}/lib/modules/"*
 rm -rf "${R:?}/boot/"*
 mkdir -p "$R/boot/dtb/rockchip" "$R/boot/extlinux" "$R/lib/modules"
-cp -a "$BA/boot/Image" "$R/boot/Image"
+# -L：万一资产里的 Image 仍是符号链接（旧资产），解引用成真实文件
+cp -aL "$BA/boot/Image" "$R/boot/Image"
+ISZ=$(stat -c %s "$R/boot/Image" 2>/dev/null || echo 0)
+[ "$ISZ" -gt 5242880 ] || die "/boot/Image 只有 $ISZ 字节，不是内核（符号链接没解引用？）"
 cp -a "$BA/boot/dtb/rockchip/$DTB" "$R/boot/dtb/rockchip/$DTB"
 cp -a "$BA/lib/modules/$KERNEL_VER" "$R/lib/modules/"
 info "已装 /boot/Image、/boot/dtb/rockchip/$DTB、/lib/modules/$KERNEL_VER"

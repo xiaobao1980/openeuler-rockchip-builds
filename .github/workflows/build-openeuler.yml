@@ -228,7 +228,8 @@ jobs:
       - name: 下载 openEuler 整机镜像
         run: |
           set -euo pipefail
-          BASE="https://dl-cdn.openeuler.openatom.cn/${OE_VER}/virtual_machine_img/aarch64"
+          # 目录名带 openEuler- 前缀：/openEuler-24.03-LTS-SP4/virtual_machine_img/aarch64/
+          BASE="https://dl-cdn.openeuler.openatom.cn/openEuler-${OE_VER}/virtual_machine_img/aarch64"
           F="openEuler-${OE_VER}-aarch64.qcow2.xz"
           mkdir -p in
           echo "下载 $BASE/$F"
