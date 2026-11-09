@@ -17,9 +17,10 @@
 | `h96-m9` boot 资产 | `boot-h96-m9-6.1.172.tar.zst` **34 MiB**；来源 `armbian-custom-builds@h96s-20261109-r37`，MANIFEST：`kernel=6.1.172-vendor-rk35xx`、`dtb=rk3576-h96-m9s.dtb` |
 | `h96-m9` 集成安装 `node-red,mosquitto` | 镜像 **3.2 G**，分区起点 LBA 32768 校验通过，`verify-image.sh` **37 项全过**，产物 **708 MiB**（Release `h96-m9-iot-20261109-r9`，19 分钟；坑 #18 + #19，**别刷**） |
 | `h96-m9` IoT 修复版（extlinux 路径） | `kernel /boot/Image` + `fdt /boot/dtb/...` + 根硬链接兼容层；**41 项全过**（新增 4 项把 conf 路径落地断言），产物 **710 MiB**，Release `h96-m9-iot-20261109-r10`（15 分钟；真机证明内核能起但卡在 root 挂载 = 坑 #19，**别刷**） |
+| `h96-m9` IoT 修复版（`root=PARTUUID=`） | 固定 GPT 分区 GUID + cmdline 改 `root=PARTUUID=` / `rootfstype=ext4`，`cma=512M`；**46 项全过**（新增 5 项闭环校验），镜像 **3.2 G**，产物 `openEuler-...-r11.img.xz` **743,299,976 B ≈ 709 MiB**，run `42667041838`（11 分钟，success），Release **`h96-m9-iot-20261109-r11`** ← **刷这个** |
 
 > 上面带板名的行都是 `h96-m9` 实跑；未带板名的是 `orangepi5-plus` 基线实跑。
-> ⚠️ r9 / r10 的 `.img.xz` **文件名完全相同**（按日期命名，同一天重跑撞名），必须按 **Release tag** 取，别按文件名。后续构建的产物名已带 `-r<run>`。
+> ⚠️ r9 / r10 的 `.img.xz` **文件名完全相同**（按日期命名，同一天重跑撞名），所以后续构建的产物名已带 `-r<run>`，取镜像一律按 **Release tag**。当前 Release 列表里只剩 `h96-m9-iot-20261109-r11` 与 `boot-h96-m9-6.1.172`，两个有问题版本已不可下载，正好避免误刷。
 > 🌐 跨板：路径重写与 4 项校验在共用 `scripts/` 里，其它 RK35xx 板同样受益。
 >
 > **真机两轮（2026-11-10，H96 MAX M9，串口 1500000 8N1）**：第一轮 DDR → BL31 → U-Boot 2017.09 全正常，卡在 `Retrieving file: /Image → ** File not found /Image **`（坑 #18）；修好路径后第二轮 `/boot/Image` + DTB 加载成功、`Starting kernel ...` 后内核完整起来（8 核 / HDMI / USB / eMMC 全起），却卡在 `Waiting for root device UUID=...`（坑 #19）。两轮都是「静态校验全过、真机起不来」，分别补了「conf 路径 ↔ 实体文件」和「cmdline ↔ GPT 分区表」两组闭环断言。**尚未看到**：`VFS: Mounted root (ext4 filesystem)`、systemd 登录提示符、sshd / Node-RED / Mosquitto 首启。
