@@ -90,7 +90,8 @@ if [ "$MODE" = dev ]; then
   dd if="$SRC" of="$OUT_DIR/stage/bootloader-16M.bin" bs=512 count=$((BOOTLOADER_BYTES / 512)) status=none
   ROOTDEV="$(find_root_part "$SRC")" || true
   [ -n "$ROOTDEV" ] || { dump_layout "$SRC"; die "在 $SRC 上找不到含 /etc/os-release 的分区"; }
-  mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
+  # find_root_part 命中时会保持挂载（它就是这么判断的），不要重复 mount
+  mountpoint -q "$MNT/ro" || mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
 else
   IMG="$SRC"
@@ -107,7 +108,8 @@ else
   sleep 1   # 让内核完成分区扫描，避免紧接着的 lsblk 看不到 p1
   ROOTDEV="$(find_root_part "$LOOP")" || true
   [ -n "$ROOTDEV" ] || { dump_layout "$LOOP"; die "镜像里找不到含 /etc/os-release 的分区"; }
-  mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
+  # find_root_part 命中时会保持挂载（它就是这么判断的），不要重复 mount
+  mountpoint -q "$MNT/ro" || mount -o ro "$ROOTDEV" "$MNT/ro" || die "挂载 $ROOTDEV 失败"
   SYSROOT="$MNT/ro"
 fi
 
