@@ -205,6 +205,9 @@ setup_mosquitto() {
   info "WebSocket 支持: $has_ws"
 
   mkdir -p "$R/etc/mosquitto/conf.d" "$R/var/lib/mosquitto" "$R/var/log/mosquitto"
+  # 清空 conf.d：openEuler 包可能自带 default.conf/auth.conf 等，会被 include_dir
+  # 一起加载，和我们的 listener 撞出 Duplicate value。先清掉，只留下面生成的文件。
+  rm -f "$R/etc/mosquitto/conf.d"/*.conf 2>/dev/null || true
   # 密码文件（-b 批量；-c 首次创建）
   if [ ! -f "$R/etc/mosquitto/passwd" ]; then
     # 用 600 创建：权限过宽时 mosquitto_passwd 会告警
@@ -234,7 +237,10 @@ EOF
     echo "password_file /etc/mosquitto/passwd"
     echo "persistence true"
     echo "persistence_location /var/lib/mosquitto/"
-    echo "log_dest journal"
+    # openEuler 的 mosquitto rpm 未编 systemd journal 支持，log_dest journal 会
+    # 触发 "Unknown log type journal" 并 exit 3（配置期即失败，不到监听阶段）。
+    # 改 stderr：systemd 会把 service 的 stderr 接进 journal，日志不丢。
+    echo "log_dest stderr"
     echo ""
     echo "# TCP MQTT（设备 / 后端 / HA）"
     echo "listener $MQTT_PORT"
