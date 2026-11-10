@@ -341,7 +341,7 @@ jobs:
           - 串口 \`1500000 8N1\` 应看到 U-Boot → extlinux → systemd
           - 登录后 \`passwd\` 改密码，并改 MQTT 密码：\`mosquitto_passwd -b /etc/mosquitto/passwd user-mqtt <新密码>\`
           - 新密码策略：≥8 位且含大小写/数字/符号至少 3 类；不合规会被拒，passwd 报 \`Authentication token manipulation error\`（实际原因见上方 \`BAD PASSWORD: ...\` 行）
-          - 用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`
+          - 根分区首启自动扩到整盘（\`firstboot-growfs.service\`，保留 PARTUUID、失败不阻塞启动），无需手动 \`growpart\`；排查看 \`journalctl -u firstboot-growfs\` 与 \`df -h /\`
           - 默认管理员账号 \`${ADMIN_USER:-<未创建，仅 root>}\`（sudo 需密码），日常请登这些账号而非 root"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

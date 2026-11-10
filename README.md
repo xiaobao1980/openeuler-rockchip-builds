@@ -142,11 +142,28 @@ xz -dc h96-m9-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 
 > ⚠️ 只刷 **修好 extlinux 路径之后**构建的镜像（`h96-m9-iot-20261109-r9` 及更早的 r 版本有坑 #18，会停在 `File not found /Image`）。旧卡也可以不重刷，按坑 #18 的两条硬链接热修。
 
-串口 `1500000 8N1` 应看到 `U-Boot → extlinux → systemd`。首次登录后 `passwd` 改密码；要用满整卡：
+串口 `1500000 8N1` 应看到 `U-Boot → extlinux → systemd`。首次登录后 `passwd` 改密码。
+
+镜像按「内容 + slack」定尺寸（约 3G），但已预置 **首启自动扩容**：`firstboot-growfs.service`
+会在第一次开机用 `sfdisk` 在线扩 GPT 分区项、再 `resize2fs` 在线扩文件系统，**自动吃满整卡 / eMMC，无需手动 `growpart`**。
+分区 GUID（cmdline 的 `root=PARTUUID=`）与起始 LBA 原样保留；失败一律 `exit 0`，绝不阻塞启动。
+上板后确认：
 
 ```bash
-growpart /dev/mmcblk0 1 && resize2fs /dev/mmcblk0p1
+systemctl status firstboot-growfs --no-pager
+journalctl -u firstboot-growfs --no-pager
+df -h /
 ```
+
+扩容结果记录在 `/var/lib/firstboot-growfs.done`，原分区表备份在同目录 `.partition-table.sfdisk`。
+仅当「GPT + 全盘只有一个分区 + 根在 p1」时才改分区表 —— 多分区 / 非 GPT / 解析失败都会保守跳过，以免覆盖用户数据。
+若确实被跳过，再手动处理：
+
+```bash
+growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1
+```
+
+调试时可 `FIRSTBOOT_GROWFS_DRYRUN=1 /usr/sbin/firstboot-growfs` 只预览不写盘。
 
 ---
 

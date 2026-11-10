@@ -94,6 +94,28 @@ fi
 chk "/usr/sbin/depmod 存在"             "[ -x '$MP/usr/sbin/depmod' ]"
 chk "/usr/sbin/sshd 存在"               "[ -x '$MP/usr/sbin/sshd' ]"
 
+# 首启自动扩容：镜像按内容定尺寸（约 3G），不装这个服务烧到大卡就是整盘浪费。
+# 真机教训：根 100% 满时连 npm 都装不了，而板上没有 growpart/parted 可救。
+if [ "${GROWFS_FIRSTBOOT:-1}" = "1" ]; then
+  echo "-- 首启自动扩容"
+  GROW=$MP/usr/sbin/firstboot-growfs
+  UNIT=$MP/etc/systemd/system/firstboot-growfs.service
+  WANTS=$MP/etc/systemd/system/multi-user.target.wants/firstboot-growfs.service
+  chk "/usr/sbin/firstboot-growfs 存在可执行" "[ -x '$GROW' ]"
+  chk "firstboot-growfs 语法正确"            "bash -n '$GROW'"
+  chk "扩容服务 unit 存在"                   "[ -f '$UNIT' ]"
+  chk "扩容服务开机自启"                     "[ -L '$WANTS' ]"
+  chk "扩容服务 Type=oneshot"                "grep -q '^Type=oneshot' '$UNIT'"
+  chk "扩容服务不启用 Restart（防循环）"     "! grep -q '^Restart=' '$UNIT'"
+  chk "扩容服务幂等（marker 条件）"          "grep -q 'ConditionPathExists=!/var/lib/firstboot-growfs.done' '$UNIT'"
+  chk "脚本保留 PARTUUID（原 \$UUID 写回）"  "grep -q 'PARTUUID=\$UUID' '$GROW' && grep -q 'uuid=%s' '$GROW'"
+  chk "脚本带 DRYRUN 调试开关"               "grep -q 'FIRSTBOOT_GROWFS_DRYRUN' '$GROW'"
+  chk "脚本用 --no-reread 写表"              "grep -q -- '--no-reread' '$GROW'"
+  chk "脚本通知内核 partx -u"                "grep -q 'partx -u' '$GROW'"
+else
+  echo "（GROWFS_FIRSTBOOT=0，跳过首启扩容校验）"
+fi
+
 echo "-- 内核与模块"
 chk "/boot/Image 存在且 >10MB"          "[ -f '$MP/boot/Image' ] && [ \$(stat -c %s '$MP/boot/Image') -gt 10485760 ]"
 chk "/boot/dtb/rockchip/$DTB 存在"      "[ -f '$MP/boot/dtb/rockchip/$DTB' ]"

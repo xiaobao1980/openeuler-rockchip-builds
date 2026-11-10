@@ -15,6 +15,7 @@
 #   ADMIN_GROUPS           管理员附加组（逗号/空格分隔，默认 wheel；sudo 经 %wheel）
 #   SSH_PUBKEY              root 及管理员账号的 SSH 公钥；传入则只允许密钥登录、关闭密码登录
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
+#   GROWFS_FIRSTBOOT=0  禁用首启自动扩容服务（默认启用；烧到大卡/eMMC 后自动吃满整盘）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
 #               见 scripts/integrate-iot.sh 的选项说明
@@ -305,6 +306,46 @@ fi
 for u in cloud-init cloud-init-local cloud-config cloud-final; do
   rm -f "$R/etc/systemd/system/multi-user.target.wants/$u.service" 2>/dev/null || true
 done
+
+# ---------------------------------------------------------------------------
+# 6a. 首启自动扩容：镜像按「内容 + slack」定尺寸（约 3G），烧到 32G 卡 / 116G
+#     eMMC 后不扩就白白浪费整盘。装一个 oneshot 服务，首次启动用 sfdisk 在线
+#     扩 GPT 分区项再 resize2fs；失败一律 exit 0，绝不阻塞启动。
+#     细节与板上实测踩过的坑见 scripts/firstboot-growfs.sh 文件头。
+# ---------------------------------------------------------------------------
+GROWFS_FIRSTBOOT="${GROWFS_FIRSTBOOT:-1}"
+if [ "$GROWFS_FIRSTBOOT" = "1" ]; then
+  [ -f "$HERE/firstboot-growfs.sh" ] || die "缺 scripts/firstboot-growfs.sh"
+  mkdir -p "$R/usr/sbin" "$R/etc/systemd/system/multi-user.target.wants"
+  install -m 0755 "$HERE/firstboot-growfs.sh" "$R/usr/sbin/firstboot-growfs"
+  cat > "$R/etc/systemd/system/firstboot-growfs.service" <<'UNIT'
+[Unit]
+Description=First boot: grow root partition and filesystem to fill the disk
+After=local-fs.target
+ConditionPathExists=!/var/lib/firstboot-growfs.done
+FailureAction=none
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/firstboot-growfs
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+# 脚本本身恒 exit 0；这里再兜一层，任何异常都不许把 boot 拖成 degraded
+SuccessExitStatus=0 1 2 3 4 5 6 7
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  # 构建期不走 systemctl enable（chroot 里不可靠），直接建 wants 软链
+  ln -sf ../firstboot-growfs.service \
+    "$R/etc/systemd/system/multi-user.target.wants/firstboot-growfs.service"
+  info "已预置 firstboot-growfs：首启自动把根分区扩到整盘（PARTUUID 不变，失败不阻塞启动）"
+else
+  info "GROWFS_FIRSTBOOT=0：跳过首启自动扩容服务"
+fi
 
 # ---------------------------------------------------------------------------
 # 6b. 安全加固：非 root 管理员 + 可选 SSH 公钥
