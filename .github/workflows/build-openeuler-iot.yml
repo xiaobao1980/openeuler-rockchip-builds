@@ -300,7 +300,7 @@ jobs:
           echo "实际内核: $KVER"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
           # 带 run number：同一天修完 bug 重跑时，旧产物与新产物不再同名（r9/r10 就撞过）
-          NAME="openEuler-${OE_VER}-${BOARD}-iot-${KVER%%-*}-${DATE}-r${GITHUB_RUN_NUMBER}.img"
+          NAME="openEuler-${OE_VER}-${BOARD}-iot-${KVER%%-*}-${DATE}.img"
           mv out.img "$NAME"
           echo "大小: $(du -h "$NAME" | cut -f1)"
           xz -T0 -6 "$NAME"
@@ -321,7 +321,7 @@ jobs:
         run: |
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
-          TAG="${BOARD}-iot-${DATE}-r${GITHUB_RUN_NUMBER}"
+          TAG="${BOARD}-iot-${DATE}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" ./*.img.xz ./*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
           else

@@ -282,8 +282,9 @@ jobs:
           KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
           echo "实际内核: $KVER"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
-          # 带 run number：避免同一天多次构建产出的 .img.xz 同名却内容不同
-          NAME="openEuler-${OE_VER}-${BOARD}-${KVER%%-*}-${DATE}-r${GITHUB_RUN_NUMBER}.img"
+          # 镜像名不带 run number（用户要求）。同日重复构建会产出同名文件：
+          # Release 上传走 --clobber 覆盖旧版，run 编号在 Release 标题里可追溯。
+          NAME="openEuler-${OE_VER}-${BOARD}-${KVER%%-*}-${DATE}.img"
           mv out.img "$NAME"
           echo "大小: $(du -h "$NAME" | cut -f1)"
           xz -T0 -6 "$NAME"
@@ -304,7 +305,7 @@ jobs:
         run: |
           set -euo pipefail
           DATE=$(date -u +%Y%m%d)
-          TAG="${BOARD}-${DATE}-r${GITHUB_RUN_NUMBER}"
+          TAG="${BOARD}-${DATE}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" ./*.img.xz ./*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
           else
