@@ -13,7 +13,7 @@
 #   ROOT_PW     root 密码（默认 openeuler）
 #   ADMIN_USER / ADMIN_PW   非 root 管理员账号（逗号/空格分隔可多个；留空=不创建默认管理员，只留 root；统一用 ADMIN_PW）
 #   ADMIN_GROUPS           管理员附加组（逗号/空格分隔，默认 wheel；sudo 经 %wheel）
-#   SSH_PUBKEY              root 的 SSH 公钥；传入则只允许密钥登录、关闭 root 密码
+#   SSH_PUBKEY              root 及管理员账号的 SSH 公钥；传入则只允许密钥登录、关闭密码登录
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
@@ -364,18 +364,29 @@ else
   info "未配置管理员账号（admin_user 留空）：只保留 root，建议上板后手动建账号"
 fi
 
-# 2) SSH 公钥（可选）：传入则只允许密钥登录，关闭 root 密码
+# 2) SSH 公钥（可选）：传入则只允许密钥登录（root 与所有管理员账号均注入公钥），关闭密码登录
 if [ -n "$SSH_PUBKEY" ]; then
   mkdir -p "$R/root/.ssh"; chmod 700 "$R/root/.ssh"
   printf '%s\n' "$SSH_PUBKEY" >> "$R/root/.ssh/authorized_keys"
   chmod 600 "$R/root/.ssh/authorized_keys"; chown -R 0:0 "$R/root/.ssh"
+  # 同时把公钥给每个管理员账号（admin_user），使其可密钥登录；否则设了 ssh_pubkey 后
+  # 全局 PasswordAuthentication=no，iot 等管理员既无密钥又被禁密码，将完全无法 SSH 登入。
+  IFS=' ,' read -r -a _ADM <<< "${ADMIN_USER//,/ }"
+  for _au in "${_ADM[@]}"; do
+    [ -z "$_au" ] && continue
+    grep -q "^${_au}:" "$R/etc/passwd" || continue
+    _h=$(awk -F: -v u="$_au" '$1==u{print $6}' "$R/etc/passwd"); [ -z "$_h" ] && _h="/home/$_au"
+    mkdir -p "$R$_h/.ssh"; chmod 700 "$R$_h/.ssh"
+    printf '%s\n' "$SSH_PUBKEY" >> "$R$_h/.ssh/authorized_keys"
+    chmod 600 "$R$_h/.ssh/authorized_keys"; chown -R "$_au:$_au" "$R$_h/.ssh"
+  done
   if [ -f "$R/etc/ssh/sshd_config" ]; then
     sed -i -E 's/^#?\s*PermitRootLogin\s+.*/PermitRootLogin prohibit-password/' "$R/etc/ssh/sshd_config"
     grep -qE '^PermitRootLogin\s+prohibit-password' "$R/etc/ssh/sshd_config" || echo 'PermitRootLogin prohibit-password' >> "$R/etc/ssh/sshd_config"
     sed -i -E 's/^#?\s*PasswordAuthentication\s+.*/PasswordAuthentication no/' "$R/etc/ssh/sshd_config"
     grep -qE '^PasswordAuthentication\s+no' "$R/etc/ssh/sshd_config" || echo 'PasswordAuthentication no' >> "$R/etc/ssh/sshd_config"
   fi
-  info "已注入 root 公钥并关闭密码登录（prohibit-password）"
+  info "已注入 root 及管理员公钥并关闭密码登录（prohibit-password）"
 else
   info "未传 SSH_PUBKEY：保留 root 密码登录（上板后建议改强密码 + 关闭密码登录）"
 fi

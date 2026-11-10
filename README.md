@@ -189,13 +189,13 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosqui
 
 ### 账户与安全（B）
 
-刷出来的镜像默认只有 root 能登录。为降低风险，构建会再建**非 root 管理员账号**并归入 `wheel`、放行 `%wheel` sudo——**日常登这些、需要时才 sudo**。
+刷出来的镜像默认带 `iot` 管理员账号（可改其它用户名、也可留空），外加 root。为降低风险，构建会再建**非 root 管理员账号**并归入 `wheel`、放行 `%wheel` sudo——**日常登这些、需要时才 sudo**。
 
-- `admin_user`：非 root 管理员账号，**逗号/空格分隔可多个**（例如 `admin_user=alice,bob,carol`），适合团队每人一个账号；统一用 `admin_pw` 的密码、sudo 需密码。**留空则不创建任何默认管理员，只留 root**（与 armbian-custom-builds 的 `user_name` 留空语义一致）。
+- `admin_user`：**默认 `iot`**（可改成其它用户名，例如 `admin_user=alice`）；**逗号/空格分隔可多个**（例如 `admin_user=alice,bob,carol`），适合团队每人一个账号；统一用 `admin_pw` 的密码、sudo 需密码。**留空则不创建任何默认管理员，只留 root**（与 armbian-custom-builds 的 `user_name` 留空语义一致）。
 - `user_groups`：管理员附加组，**逗号/空格分隔，留空=仅 `wheel`**（sudo 经 `%wheel`）；例如 `user_groups=wheel,docker` 让管理员同时进 docker 组。
 
 - 服务进程（nodered / mosquitto / zigbee2mqtt）本来就各自降权到独立系统用户，不跑 root；上面只是把「交互登录」也从 root 挪开。
-- `root_password` 仍生效（root 密码登录保留，方便 bring-up）；若要更硬，传 `ssh_pubkey` 即可让 root 只允许密钥登录、关闭密码（`PermitRootLogin prohibit-password` + `PasswordAuthentication no`）。
+- `root_password` 仍生效（root 密码登录保留，方便 bring-up）；若要更硬，传 `ssh_pubkey` 即可让 root 与所有管理员账号都只允许密钥登录、关闭密码（`PermitRootLogin prohibit-password` + `PasswordAuthentication no`），公钥同时注入 `root` 与各 `admin_user` 的 `~/.ssh/authorized_keys`。
 - 不论哪种，上板后第一件事 `passwd`（以及 `passwd iot`）改掉默认 `openeuler` 弱密码。
 
 ### Node-RED 扩展节点（A）

@@ -102,12 +102,12 @@ on:
         required: false
         default: ""
       admin_user:
-        description: "非 root 管理员账号（逗号/空格分隔可多个；留空=不创建默认管理员，只留 root）"
+        description: "非 root 管理员账号（默认 iot，可改其它用户名；逗号/空格分隔可多个；留空=不创建默认管理员，只留 root）"
         type: string
         required: false
-        default: ""
+        default: "iot"
       admin_pw:
-        description: "管理员账号密码（多个账号统一用此密码）"
+        description: "管理员账号密码（默认 openeuler 为弱口令，上板前务必修改；多个账号统一用此密码）"
         type: string
         required: false
         default: openeuler
