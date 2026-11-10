@@ -76,7 +76,7 @@ if [ "${#_AV[@]}" -gt 0 ] && [ -n "${_AV[0]}" ]; then
     _ingrp=0
     for _g in $_AG; do
       [ -z "$_g" ] && continue
-      if grep -q "^${_g}:.*${_au}" '$MP/etc/group'; then _ingrp=1; fi
+      if grep -q "^${_g}:.*${_au}" "$MP/etc/group"; then _ingrp=1; fi
     done
     chk "$_au 在附加组($_AG)中"      "[ $_ingrp -eq 1 ]"
     # 首次登录强制改口令：shadow 第 3 字段（上次改密时间）应为 0
