@@ -69,6 +69,10 @@ esac
 mkdir -p "$WORK"
 R="$WORK/rootfs"
 MNT_OE="$WORK/mnt-oe"
+# 归一化绝对路径：find 输出与下方还原时的前缀剥离必须用同一份绝对路径，
+# 否则 $WORK 为相对路径时前缀对不上，setuid 位会还原到错误位置。
+mkdir -p "$MNT_OE"
+MNT_OE_ABS="$(readlink -f "$MNT_OE" 2>/dev/null || echo "$MNT_OE")"
 LOOP_OE=""; LOOP_OUT=""
 cleanup() {
   set +e
@@ -182,6 +186,11 @@ info "$(grep -E '^(PRETTY_NAME|VERSION_ID)=' "$MNT_OE/etc/os-release" | tr '\n' 
 log "抄出 rootfs（保留 xattr / ACL / SELinux 上下文）"
 rm -rf "$R"; mkdir -p "$R"
 rsync -aHAX --numeric-ids "$MNT_OE/" "$R/"
+# 抓取源 rootfs 的全部 setuid/setgid 文件（含精确权限），供最终镜像还原。
+# 某些 CI/构建环境的工作盘以 nosuid 挂载：rsync 抄写时 setuid 位会被静默丢弃，
+# 导致 /usr/bin/passwd、sudo、su 等失去 s 位 → 普通用户无法改密、无法提权。
+# 最终 ext4 镜像（loop 挂载）支持 setuid，下方 §10 会按此清单还原。
+find "$MNT_OE_ABS" -type f \( -perm -4000 -o -perm -2000 \) -printf '%m %p\n' > "$WORK/setuid.list" 2>/dev/null || true
 umount "$MNT_OE"
 losetup -d "$LOOP_OE"; LOOP_OE=""
 rm -f "$OE_RAW"
@@ -482,6 +491,23 @@ mkfs.ext4 -q -F -L "$ROOT_LABEL" -U "$ROOT_UUID" -m 1 "$FSIMG"
 LOOP_OUT=$(losetup --find --show "$FSIMG")
 mkdir -p "$WORK/mnt-out"; mount "$LOOP_OUT" "$WORK/mnt-out"
 rsync -aHAX --numeric-ids "$R/" "$WORK/mnt-out/"
+# 还原 setuid/setgid 位：源 rootfs 经 nosuid 工作盘抄写后 s/g 位可能丢失。
+# 按 setuid.list（源真实权限）在最终 ext4 上逐文件还原，确保 passwd/sudo/su 等可用。
+if [ -s "$WORK/setuid.list" ]; then
+  while read -r _mode _path; do
+    [ -n "$_path" ] || continue
+    _rel=${_path#"$MNT_OE_ABS"}
+    _tgt="$WORK/mnt-out$_rel"
+    [ -e "$_tgt" ] || continue
+    chmod "$_mode" "$_tgt" 2>/dev/null || true
+  done < "$WORK/setuid.list"
+fi
+# 兜底：即便源清单缺失，也强制保证最常用的提权/改密二进制为 setuid root。
+for _b in /usr/bin/passwd /usr/bin/su /usr/bin/sudo /usr/bin/pkexec; do
+  [ -x "$WORK/mnt-out$_b" ] || continue
+  chown 0:0 "$WORK/mnt-out$_b" 2>/dev/null
+  chmod u+rws,g+rx,o+rx "$WORK/mnt-out$_b" 2>/dev/null || true
+done
 sync
 umount "$WORK/mnt-out"
 losetup -d "$LOOP_OUT"; LOOP_OUT=""

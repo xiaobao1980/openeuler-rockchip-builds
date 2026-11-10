@@ -66,6 +66,11 @@ mount -o ro "$P1" "$MP" || { bad "挂载 $P1 失败"; exit 1; }
 echo "-- 系统身份"
 chk "/etc/os-release 是 openEuler"     "grep -q '^ID=\"*openEuler' '$MP/etc/os-release'"
 chk "/etc/passwd 有 root"              "grep -q '^root:' '$MP/etc/passwd'"
+# setuid 位回归防护：若构建环境工作盘以 nosuid 挂载，passwd/sudo/su 的 s 位会丢失，
+# 普通用户将无法改密/提权（典型症状：首登强制改密报 Authentication token manipulation error）。
+chk "/usr/bin/passwd 带 setuid 位"      "[ -u '$MP/usr/bin/passwd' ]"
+chk "/usr/bin/sudo 带 setuid 位"        "[ -u '$MP/usr/bin/sudo' ]"
+chk "/usr/bin/su 带 setuid 位"          "[ -u '$MP/usr/bin/su' ]"
 # 管理员账号（逗号/空格分隔可多个；admin_user 留空=不创建，则跳过校验）
 IFS=' ,' read -r -a _AV <<< "${ADMIN_USER:-}"
 if [ "${#_AV[@]}" -gt 0 ] && [ -n "${_AV[0]}" ]; then
