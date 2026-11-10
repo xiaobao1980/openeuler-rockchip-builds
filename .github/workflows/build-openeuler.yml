@@ -53,6 +53,26 @@ on:
         type: string
         required: false
         default: openeuler
+      admin_user:
+        description: "非 root 管理员账号（默认 iot，可改其它用户名；逗号/空格分隔可多个；留空=不创建默认管理员，只留 root）"
+        type: string
+        required: false
+        default: "iot"
+      admin_pw:
+        description: "管理员账号密码（默认 openeuler 为弱口令，上板后请立即改！多个账号统一用此密码）"
+        type: string
+        required: false
+        default: openeuler
+      user_groups:
+        description: "管理员附加组（逗号/空格分隔；留空=仅 wheel，sudo 经 %wheel）"
+        type: string
+        required: false
+        default: ""
+      ssh_pubkey:
+        description: "SSH 公钥（可选）：传入则 root 与所有管理员账号均注入公钥、并关闭密码登录（prohibit-password）"
+        type: string
+        required: false
+        default: ""
       max_parallel:
         description: "并发构建数（arm runner 每个都跑满 4 核，建议 2）"
         type: string
@@ -144,6 +164,10 @@ jobs:
       SELINUX_MODE: ${{ inputs.selinux }}
       CMA_OVERRIDE: ${{ inputs.cma_override }}
       ROOT_PW: ${{ inputs.root_password }}
+      ADMIN_USER: ${{ inputs.admin_user }}
+      ADMIN_PW: ${{ inputs.admin_pw }}
+      ADMIN_GROUPS: ${{ inputs.user_groups }}
+      SSH_PUBKEY: ${{ inputs.ssh_pubkey }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -296,6 +320,6 @@ jobs:
           xz -dc ${BOARD}-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
           \`\`\`
           启动后串口 1500000 8N1 应看到 U-Boot → extlinux → systemd。
-          首次登录后务必 \`passwd\` 改密码；用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`"
+          默认管理员 \`iot\`（口令 openeuler，已设首次登录强制改口令）；root 口令同默认，建议尽快改。首次登录会被要求立即改 \`iot\` 口令，改完即可正常使用；用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

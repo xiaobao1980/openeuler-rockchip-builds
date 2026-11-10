@@ -79,6 +79,8 @@ if [ "${#_AV[@]}" -gt 0 ] && [ -n "${_AV[0]}" ]; then
       if grep -q "^${_g}:.*${_au}" '$MP/etc/group'; then _ingrp=1; fi
     done
     chk "$_au 在附加组($_AG)中"      "[ $_ingrp -eq 1 ]"
+    # 首次登录强制改口令：shadow 第 3 字段（上次改密时间）应为 0
+    chk "$_au 首次登录强制改口令(shadow 第3字段=0)" "awk -F: -v u='${_au}' '\$1==u && \$3==0' '$MP/etc/shadow'"
   done
   chk "sudoers 放行 wheel"            "grep -q '%wheel' '$MP/etc/sudoers.d/wheel' 2>/dev/null || grep -q '%wheel' '$MP/etc/sudoers' 2>/dev/null"
 else

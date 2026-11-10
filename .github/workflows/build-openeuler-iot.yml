@@ -117,7 +117,7 @@ on:
         required: false
         default: ""
       ssh_pubkey:
-        description: "root SSH 公钥（传入则只允许密钥登录、关闭 root 密码）"
+        description: "SSH 公钥（可选）：传入则 root 与所有管理员账号均注入公钥、并关闭密码登录（prohibit-password）"
         type: string
         required: false
         default: ""

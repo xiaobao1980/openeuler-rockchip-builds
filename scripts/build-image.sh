@@ -353,12 +353,21 @@ if [ "${#ADMINS[@]}" -gt 0 ] && [ -n "${ADMINS[0]}" ]; then
         fi
       fi
     done
+    # 强制首次登录改口令（等价于 chage -d 0：把“上次改密时间”置 0 → 登录即过期、必须先改密）
+    # 仅作用于管理员账号，root 不动（root 是 bring-up 便利账号）。chage -R 在精简 chroot 可能不可用，awk 兜底直接改 shadow 第 3 字段。
+    if chage -R "$R" -d 0 "$AU" >/dev/null 2>&1; then
+      :
+    else
+      awk -F: -v u="$AU" 'BEGIN{OFS=":"} $1==u{ $3=0 } {print}' "$R/etc/shadow" > "$R/etc/shadow.new" \
+        && mv "$R/etc/shadow.new" "$R/etc/shadow"
+    fi
+    chmod 000 "$R/etc/shadow" 2>/dev/null || true
   done
   _ALIST=$(IFS=,; echo "${ADMINS[*]}")
   _GLIST=$(echo "$AG" | tr ' ' ',')
   # 注意：set -u 下 bash 对“含中文的双引号串 + 命令替换变量内插”有 unbound 误报，
   # 故把动态变量拼在双引号之外，再整体传给 info（已验证稳定）。
-  _MSG="已建管理员账号："$_ALIST"（组："$_GLIST"，sudo 需密码），日常登这些而非 root"
+  _MSG="已建管理员账号："$_ALIST"（组："$_GLIST"，sudo 需密码，首次登录强制改口令），日常登这些而非 root"
   info "$_MSG"
 else
   info "未配置管理员账号（admin_user 留空）：只保留 root，建议上板后手动建账号"
