@@ -1,0 +1,61 @@
+name: 清除所有工作流
+# 用途：删除本仓库全部「已完成(completed)」的工作流运行记录（不可逆）。
+# 触发：仅手动 (Actions 页 → 此工作流 → Run workflow)。
+# 安全：必须在本工作流运行时于 confirm 输入框填 YES 才会执行；
+#       当前正在运行的这条（自己）和仍在 in-progress 的运行会被跳过。
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "输入 YES 确认清除全部已完成的工作流运行（不可逆）"
+        required: true
+        default: "NO"
+
+permissions:
+  actions: write   # 删除 workflow run 必需
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard (must confirm YES)
+        if: ${{ inputs.confirm != 'YES' }}
+        run: |
+          echo "未输入 YES，已中止。"
+          exit 1
+
+      - name: Delete all completed workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const current = context.runId;   // 不删自己
+            const per = 100;
+            let page = 1;
+            const collected = [];
+            while (true) {
+              const res = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, per_page: per, page
+              });
+              const runs = res.data.workflow_runs;
+              if (runs.length === 0) break;
+              for (const r of runs) {
+                if (r.id === current) continue;        // 跳过自身
+                if (r.status !== 'completed') continue; // 跳过进行中
+                collected.push(r.id);
+              }
+              if (runs.length < per) break;
+              page++;
+            }
+            console.log(`found ${collected.length} runs to delete (excl. current/in-progress)`);
+            let ok = 0;
+            for (const id of collected) {
+              try {
+                await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: id });
+                ok++;
+              } catch (e) {
+                console.log(`skip ${id}: ${e.message}`);
+              }
+            }
+            console.log(`deleted ${ok}/${collected.length} runs`);

@@ -1,0 +1,50 @@
+name: 清除失败工作流
+# 用途：删除本仓库所有「失败(failure)」状态的工作流运行记录。
+# 触发：手动 (Actions 页 → 此工作流 → Run workflow)。
+# 说明：默认仅手动触发；如需每天定时自动清失败记录，把下面注释掉的
+#       schedule 段取消注释即可（cron '0 4 * * *' = 每天 04:00 UTC）。
+#       注意：本工作流只清 failure 状态，被手动取消(cancelled)或超时
+#       (timed_out) 的 run 不会被清理；如需覆盖，需扩展查询条件。
+on:
+  workflow_dispatch:
+    # schedule:
+    #   - cron: '0 4 * * *'
+
+permissions:
+  actions: write   # 删除 workflow run 必需
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete failed workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const per = 100;
+            let page = 1;
+            const collected = [];
+            // 先翻页收集所有 failure run 的 id，再统一删除，避免边删边翻页漏删
+            while (true) {
+              const res = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, status: 'failure', per_page: per, page
+              });
+              const runs = res.data.workflow_runs;
+              if (runs.length === 0) break;
+              for (const r of runs) collected.push(r.id);
+              if (runs.length < per) break;
+              page++;
+            }
+            console.log(`found ${collected.length} failed runs`);
+            let ok = 0;
+            for (const id of collected) {
+              try {
+                await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: id });
+                ok++;
+              } catch (e) {
+                console.log(`skip ${id}: ${e.message}`);
+              }
+            }
+            console.log(`deleted ${ok}/${collected.length} failed runs`);
