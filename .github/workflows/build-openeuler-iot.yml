@@ -97,7 +97,7 @@ on:
         required: false
         default: openeuler
       node_red_nodes:
-        description: "Node-RED 扩展节点（空格分隔，烘焙进 /var/lib/node-red userDir）"
+        description: "Node-RED 扩展节点（空格分隔，烘焙进 /var/lib/node-red userDir）；留空=默认全装 29 个，填 none 可禁用"
         type: string
         required: false
         default: ""

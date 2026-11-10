@@ -26,11 +26,16 @@
 #   --adapter=zstack|ember|ezsp|deconz  默认 zstack
 #   --node-version=22                  Node.js 主版本
 #   --npm-registry=https://registry.npmmirror.com
-#   --node-red-nodes="pkg1 pkg2"   额外装的 Node-RED 扩展节点（默认空；装到 userDir）
+#   --node-red-nodes="pkg1 pkg2"   自定义扩展节点清单；留空=默认全装 29 个；填 none=不装
 #   --no-clean                        保留 dnf/npm 缓存（调试用，会多占 ~200MB）
 #
 # 环境变量同义：IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER
 #              IOT_NODERED_NODES（见 --node-red-nodes）
+#
+# 默认扩展节点清单与板上 iot/install_nodered_z2m_ubuntu24_v3.5.sh step10 对齐，
+# 2026-11-10 在 h96-m9 真机验证 29 个全部可用。两个刻意的例外：
+#   - node-red-contrib-shairport-sync：npm 上不存在（404），不列入；
+#   - node-red-contrib-hue：无 Hue Bridge 会让 Node-RED 启动崩溃，坚决不装。
 # ============================================================================
 set -euo pipefail
 
@@ -48,6 +53,42 @@ COORD="${IOT_COORD:-}"
 ADAPTER="${IOT_ADAPTER:-zstack}"
 NODE_MAJOR="${IOT_NODE_VERSION:-22}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+
+# 默认烘焙的 28 个 npm 包（第 29 个 onvif 走 GitHub 引用，单列在后面单独装）。
+# 用反斜杠续行拼成**单行空格分隔**字符串：cr() 是 chroot bash -c "$*"，
+# 若清单里带真实换行会被 bash -c 解析成多条命令，安装包名会被当命令执行。
+DEFAULT_NODE_RED_NODES="\
+@flowfuse/node-red-dashboard \
+node-red-contrib-actionflows \
+node-red-contrib-artnet \
+node-red-contrib-cast \
+node-red-contrib-dlna \
+node-red-contrib-home-assistant-websocket \
+node-red-contrib-kodi \
+node-red-contrib-milight \
+node-red-contrib-modbus \
+node-red-contrib-mpd \
+node-red-contrib-mytimeout \
+node-red-contrib-scheduler \
+node-red-contrib-sonos \
+node-red-contrib-stoptimer \
+node-red-contrib-sun-position \
+node-red-contrib-tasmota \
+node-red-contrib-telegrambot \
+node-red-contrib-timeout \
+node-red-contrib-tuya-local \
+node-red-contrib-tuya-smart \
+node-red-contrib-uibuilder \
+node-red-contrib-volumio \
+node-red-contrib-wled \
+node-red-contrib-yeelight \
+node-red-contrib-zigbee2mqtt \
+node-red-contrib-zigbee2mqtt-devices \
+node-red-dashboard \
+node-red-node-serialport"
+# npm 上没有官方 onvif 节点，只有 GitHub 引用；单独装，避免它拖垮整批
+ONVIF_NODE="bartbutenaers/node-red-contrib-onvif-nodes"
+
 NODE_RED_NODES="${IOT_NODERED_NODES:-}"
 DO_CLEAN=1
 
@@ -69,6 +110,14 @@ for a in "$@"; do
     *) echo "未知参数: $a" >&2; exit 2 ;;
   esac
 done
+
+# 留空 = 默认全装 29 个；显式填 none/off/- = 完全不装；填其它 = 自定义清单。
+# 放在参数解析之后，保证 --node-red-nodes=none 也能正确禁用。
+case "$NODE_RED_NODES" in
+  "" )                  NODE_RED_NODES="$DEFAULT_NODE_RED_NODES"; USE_ONVIF=1 ;;
+  none|off|-|disable )  NODE_RED_NODES="";                         USE_ONVIF=0 ;;
+  * )                   USE_ONVIF=0 ;;   # 自定义清单时不再额外塞 onvif
+esac
 
 log()  { printf '\n\033[1;36m[IOT] %s\033[0m\n' "$*"; }
 info() { printf '      %s\n' "$*"; }
@@ -362,16 +411,49 @@ setup_nodered() {
   gid=$(awk -F: '$1=="nodered"{print $4}' "$R/etc/passwd" | head -1)
   [ -n "$uid" ] && chown -R "$uid:$gid" "$R/var/lib/node-red"
 
-  # 扩展节点（可选，--node-red-nodes / IOT_NODERED_NODES）：装到 userDir
-  # /var/lib/node-red，不污染全局；以 nodered 身份安装，权限与运行态一致。
-  if [ -n "$NODE_RED_NODES" ]; then
-    log "安装扩展节点: $NODE_RED_NODES"
-    if cr "cd /var/lib/node-red && sudo -u nodered npm install --no-audit --no-fund $NODE_RED_NODES" >/tmp/iot-nr-nodes.log 2>&1 \
-       || cr "cd /var/lib/node-red && npm install --no-audit --no-fund $NODE_RED_NODES" >/tmp/iot-nr-nodes.log 2>&1; then
-      info "扩展节点已装入 /var/lib/node-red/node_modules"
+  # 扩展节点：默认烘焙 29 个（28 个 npm 包 + 1 个 GitHub 引用的 onvif），
+  # 装到 userDir /var/lib/node-red，不污染全局；可用 --node-red-nodes 自定义或填 none 禁用。
+  if [ -n "$NODE_RED_NODES" ] || [ "$USE_ONVIF" = 1 ]; then
+    _N=$(echo "$NODE_RED_NODES" | wc -w)
+    log "安装扩展节点（批量 $_N 个 + onvif $USE_ONVIF 个）"
+    : > /tmp/iot-nr-nodes.log
+    : > /tmp/iot-nr-failed.list
+    # chroot 内统一封装：优先以 nodered 身份装（权限与运行态一致），
+    # 失败回退 root（精简 rootfs 可能没有 sudo），最后统一 chown 归还属主。
+    nr_install() {
+      local pkgs="$1"
+      cr "cd /var/lib/node-red && { sudo -u nodered npm install --no-audit --no-fund --loglevel=error $pkgs \
+           || npm install --no-audit --no-fund --loglevel=error $pkgs; }" >>/tmp/iot-nr-nodes.log 2>&1
+    }
+    if [ -n "$NODE_RED_NODES" ]; then
+      if nr_install "$NODE_RED_NODES"; then
+        info "批量安装成功（$_N 个）"
+      else
+        # 一次 npm install 里只要有一个包 404，整批都会回滚 —— 逐个重试保证「全装」可达
+        warn "批量安装失败，改为逐个安装（避免单个包拖垮全部）"
+        for p in $NODE_RED_NODES; do
+          if nr_install "$p"; then
+            info "  OK   $p"
+          else
+            info "  FAIL $p"
+            echo "$p" >> /tmp/iot-nr-failed.list
+          fi
+        done
+      fi
+    fi
+    if [ "$USE_ONVIF" = 1 ]; then
+      if nr_install "$ONVIF_NODE"; then
+        info "  OK   $ONVIF_NODE"
+      else
+        warn "  FAIL $ONVIF_NODE（GitHub 引用）"
+        echo "$ONVIF_NODE" >> /tmp/iot-nr-failed.list
+      fi
+    fi
+    if [ -s /tmp/iot-nr-failed.list ]; then
+      warn "未装成功 $(wc -l < /tmp/iot-nr-failed.list) 个: $(tr '\n' ' ' < /tmp/iot-nr-failed.list)"
+      tail -15 /tmp/iot-nr-nodes.log >&2
     else
-      tail -25 /tmp/iot-nr-nodes.log >&2
-      warn "扩展节点安装失败（可能不支持当前 Node-RED 版本），继续"
+      info "扩展节点全部装入 /var/lib/node-red/node_modules"
     fi
     # 装的时候是 root/npm 写的，归还属主给 nodered，避免运行态 Permission denied
     [ -n "$uid" ] && chown -R "$uid:$gid" "$R/var/lib/node-red"

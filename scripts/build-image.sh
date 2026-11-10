@@ -601,7 +601,11 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "IOT_NODERED_PORT=${IOT_NODERED_PORT:-1880}"
   echo "IOT_Z2M_PORT=${IOT_Z2M_PORT:-8080}"
 } > "$RESOLVED"
-ADMIN_USER="$ADMIN_USER" ADMIN_GROUPS="$ADMIN_GROUPS" BOARD_CONF="$RESOLVED" bash "$HERE/verify-image.sh" "$OUT_IMG"
+# 两个开关显式带入 verify：新增的「首启扩容」与「默认扩展节点」断言靠它们分流，
+# 不能只靠环境继承（本地直接跑 / sudo 不带 -E 时会静默跳过，失去防回归意义）。
+ADMIN_USER="$ADMIN_USER" ADMIN_GROUPS="$ADMIN_GROUPS" BOARD_CONF="$RESOLVED" \
+  GROWFS_FIRSTBOOT="$GROWFS_FIRSTBOOT" IOT_NODERED_NODES="${IOT_NODERED_NODES:-}" \
+  bash "$HERE/verify-image.sh" "$OUT_IMG"
 
 # 被 sudo 调用时把产物交还给调用者。否则 out.img 属 root:root，后续非 root 的
 # xz -6 会报 "Cannot set the file group: Operation not permitted" 直接失败。

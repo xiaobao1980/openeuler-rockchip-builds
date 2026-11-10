@@ -179,6 +179,16 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
       chk "node-red.service 存在"            "[ -f '$MP/etc/systemd/system/node-red.service' ]"
       chk "node-red 开机自启"                "[ -L '$MP/etc/systemd/system/multi-user.target.wants/node-red.service' ]"
       chk "node-red 非 root 运行"            "grep -qE '^User=nodered' '$MP/etc/systemd/system/node-red.service'"
+      # 默认清单必须真的烘焙进镜像（不是只写在 workflow 里）。显式填 none 时跳过。
+      case "${IOT_NODERED_NODES:-}" in
+        none|off|-|disable) echo "  （IOT_NODERED_NODES=none，跳过扩展节点校验）" ;;
+        *)
+          NR_PKG=$MP/var/lib/node-red/package.json
+          chk "默认扩展节点清单已烘焙"        "grep -q 'node-red-contrib-zigbee2mqtt' '$NR_PKG' && grep -q 'node-red-contrib-modbus' '$NR_PKG' && grep -q '@flowfuse/node-red-dashboard' '$NR_PKG'"
+          # 不把 GitHub 引用的 onvif 算进硬性断言：偶发网络失败不该阻塞发布
+          chk "扩展节点数 ≥28"                "[ \$(grep -c 'node-red-' '$NR_PKG') -ge 28 ]"
+          ;;
+      esac
       ;;
   esac
   case ",${IOT_STACK:-}," in

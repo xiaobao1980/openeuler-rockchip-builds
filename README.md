@@ -218,14 +218,23 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosqui
 
 ### Node-RED 扩展节点（A）
 
-`node_red_nodes` 输入传空格分隔的包名，构建时 `npm install` 进 `/var/lib/node-red`（userDir），**不污染全局**，刷新即自带：
+IoT 镜像**默认烘焙 29 个扩展节点**（与 `iot/install_nodered_z2m_ubuntu24_v3.5.sh` step10 对齐，2026-11-10 在 h96-m9 真机验证全部可用）。烧完开机刷新 1880 左侧面板即全在，不用再联网装。清单在 `scripts/integrate-iot.sh` 的 `DEFAULT_NODE_RED_NODES`（28 个 npm 包）+ `ONVIF_NODE`（GitHub 引用 `bartbutenaers/node-red-contrib-onvif-nodes`，单独装）。
+
+两个刻意排除：`node-red-contrib-shairport-sync`（npm 上不存在，404）、`node-red-contrib-hue`（无 Hue Bridge 会让 Node-RED 启动崩溃）。
+
+需要自定义或禁用时用 `node_red_nodes` 输入（空格分隔，装进 `/var/lib/node-red` userDir，**不污染全局**）：
 
 ```bash
-gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosquitto \
-  -f node_red_nodes="node-red-contrib-zigbee2mqtt node-red-contrib-home-assistant-websocket node-red-contrib-tasmota node-red-dashboard node-red-node-ui-table node-red-contrib-ui-led"
+# 留空 = 默认全装 29 个
+gh workflow run build-openeuler-iot.yml -f board=h96-m9
+# 自定义清单
+gh workflow run build-openeuler-iot.yml -f board=h96-m9 \
+  -f node_red_nodes="node-red-contrib-modbus node-red-dashboard"
+# 完全不装扩展节点
+gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f node_red_nodes=none
 ```
 
-r12 用的就是上面这组（zigbee2mqtt + HA + Tasmota 集成 + dashboard + ui-table/led）。不想预装也行——Node-RED 跑起来后直接在 Web 编辑器「管理面板 → 安装」里现装，效果一样。
+批量 `npm install` 只要有一个包 404 就会整批回滚，脚本会自动**逐个重试**保证「全装」可达，CI 日志会打印每个节点的 OK / FAIL 与最终数量。
 
 ---
 
