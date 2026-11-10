@@ -340,6 +340,7 @@ jobs:
           ### 首启
           - 串口 \`1500000 8N1\` 应看到 U-Boot → extlinux → systemd
           - 登录后 \`passwd\` 改密码，并改 MQTT 密码：\`mosquitto_passwd -b /etc/mosquitto/passwd user-mqtt <新密码>\`
+          - 新密码策略：≥8 位且含大小写/数字/符号至少 3 类；不合规会被拒，passwd 报 \`Authentication token manipulation error\`（实际原因见上方 \`BAD PASSWORD: ...\` 行）
           - 用满整卡：\`growpart /dev/mmcblkX 1 && resize2fs /dev/mmcblkXp1\`
           - 默认管理员账号 \`${ADMIN_USER:-<未创建，仅 root>}\`（sudo 需密码），日常请登这些账号而非 root"
           fi

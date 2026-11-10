@@ -197,6 +197,7 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f stack=node-red,mosqui
 - 服务进程（nodered / mosquitto / zigbee2mqtt）本来就各自降权到独立系统用户，不跑 root；上面只是把「交互登录」也从 root 挪开。
 - `root_password` 仍生效（root 密码登录保留，方便 bring-up）；若要更硬，传 `ssh_pubkey` 即可让 root 与所有管理员账号都只允许密钥登录、关闭密码（`PermitRootLogin prohibit-password` + `PasswordAuthentication no`），公钥同时注入 `root` 与各 `admin_user` 的 `~/.ssh/authorized_keys`。
 - 镜像已对管理员账号设置**首次登录强制改口令**（shadow 第 3 字段置 0，登录即要求改密）；`iot` 等管理员首登会被要求立即改密码，改完才可用。root 口令也建议 `passwd` 改掉默认 `openeuler` 弱密码。
+- **新密码策略**：≥8 位，且含大小写/数字/符号中至少 3 类（pwquality `minlen=8`、`minclass=3`）；`Current password` 填当前口令（出厂为 `openeuler`），新密码不合规会被拒——注意 passwd 此时收尾报的 `Authentication token manipulation error` 是误导，**真正原因看它上方那行 `BAD PASSWORD: ...`**。
 
 ### Node-RED 扩展节点（A）
 
