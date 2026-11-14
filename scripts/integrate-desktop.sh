@@ -187,25 +187,25 @@ if want wayland || want both; then
 
   # 2.1 wayland-protocols
   ( cd "$SRC/wayland-src/wayland-protocols" && git checkout "$(latest_tag "$SRC/wayland-src/wayland-protocols")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/wayland-protocols && rm -rf build && meson setup build --prefix=/usr/local -Dtests=false --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/wayland-protocols && rm -rf build && meson setup build --prefix=/usr/local -Dtests=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "wayland-protocols 编译失败"
   info "wayland-protocols=$(cr 'pkg-config --modversion wayland-protocols')"
 
   # 2.2 libxkbcommon（X11 + Wayland 都开：/usr/local/lib 优先级高于 /usr/lib64，
   #     本地库会覆盖系统库，故须同时支持 X11（UKUI 走 X11 需要 libxkbcommon-x11）与 Wayland（labwc））
   ( cd "$SRC/wayland-src/libxkbcommon" && git checkout "$(latest_tag "$SRC/wayland-src/libxkbcommon")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/libxkbcommon && rm -rf build && meson setup build --prefix=/usr/local -Denable-x11=true -Denable-wayland=true -Denable-docs=false --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/libxkbcommon && rm -rf build && meson setup build --prefix=/usr/local -Denable-x11=true -Denable-wayland=true -Denable-docs=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "libxkbcommon 编译失败"
   info "libxkbcommon=$(cr 'pkg-config --modversion xkbcommon')"
 
   # 2.3 libdisplay-info
   ( cd "$SRC/wayland-src/libdisplay-info" && git checkout "$(latest_tag "$SRC/wayland-src/libdisplay-info")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "libdisplay-info 编译失败"
 
   # 2.4 seatd (libseat)
   ( cd "$SRC/wayland-src/seatd" && git checkout "$(latest_tag "$SRC/wayland-src/seatd")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/seatd && rm -rf build && meson setup build --prefix=/usr/local -Dman-pages=disabled -Dexamples=disabled --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/seatd && rm -rf build && meson setup build --prefix=/usr/local -Dman-pages=disabled -Dexamples=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "seatd 编译失败"
 
   # 2.5 wlroots（wrap 拉子项目；新版 GCC 对 etnaviv 的 -Werror=strict-aliasing 过敏 → 关 werror）
@@ -213,7 +213,7 @@ if want wayland || want both; then
   [ -z "$WLR_TAG" ] && WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.18*')"
   [ -z "$WLR_TAG" ] && WLR_TAG="$(latest_tag "$SRC/wayland-src/wlroots")"
   ( cd "$SRC/wayland-src/wlroots" && git checkout "$WLR_TAG" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/wlroots && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=default -Dlibdrm:werror=false -Dlibliftoff:werror=false -Dexamples=false -Dxwayland=enabled --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/wlroots && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=default -Dlibdrm:werror=false -Dlibliftoff:werror=false -Dexamples=false -Dxwayland=enabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "wlroots 编译失败($WLR_TAG)"
   info "wlroots=$(cr 'pkg-config --modversion wlroots')"
 
@@ -225,18 +225,18 @@ if want wayland || want both; then
   esac
   [ -z "$LAB_TAG" ] && LAB_TAG="$(latest_tag "$SRC/wayland-src/labwc")"
   ( cd "$SRC/wayland-src/labwc" && git checkout "$LAB_TAG" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/labwc && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release && ninja -C build install && ldconfig" ) \
+    cr "cd /opt/rk-src/wayland-src/labwc && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "labwc 编译失败($LAB_TAG)"
   info "labwc=$(cr '/usr/local/bin/labwc --version 2>/dev/null | head -1')"
 
   # 2.7 foot 终端（尽力而为）
   if [ -d "$SRC/wayland-src/foot" ]; then
     ( cd "$SRC/wayland-src/tllist" && git checkout "$(latest_tag "$SRC/wayland-src/tllist")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/tllist && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release && ninja -C build install && ldconfig" ) 2>/dev/null || warn "tllist 失败"
+      cr "cd /opt/rk-src/wayland-src/tllist && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "tllist 失败"
     ( cd "$SRC/wayland-src/fcft" && git checkout "$(latest_tag "$SRC/wayland-src/fcft")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/fcft && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release && ninja -C build install && ldconfig" ) 2>/dev/null || warn "fcft 失败"
+      cr "cd /opt/rk-src/wayland-src/fcft && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "fcft 失败"
     ( cd "$SRC/wayland-src/foot" && git checkout "$(latest_tag "$SRC/wayland-src/foot")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/foot && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release && ninja -C build install && ldconfig" ) 2>/dev/null && info "foot 已装" || warn "foot 未装成（非致命，xterm via Xwayland 兜底）"
+      cr "cd /opt/rk-src/wayland-src/foot && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null && info "foot 已装" || warn "foot 未装成（非致命，xterm via Xwayland 兜底）"
   fi
 
   # 2.8 XKB 软链修复（防 labwc 段错误 SIGSEGV/exit 139）：自编译 libxkbcommon 默认找
