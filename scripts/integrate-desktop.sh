@@ -105,8 +105,9 @@ DNFC="dnf -y --setopt=install_weak_deps=False --setopt=timeout=30 --setopt=retri
 
 # 关键构建工具链（必须成功，否则后续 meson/ninja/cmake 缺失无法编译；单独成笔避免被坏包名拖垮整笔事务）
 cr "$DNFC install tar xz git curl ca-certificates shadow util-linux hostname findutils \
-  meson ninja-build cmake gcc gcc-c++ make nasm yasm pkgconf-pkg-config" >/tmp/desktop-dnf-tools.log 2>&1 \
-  || { tail -30 /tmp/desktop-dnf-tools.log >&2; die "基础构建工具链安装失败（meson/ninja/cmake 缺失），桌面集成中止"; }
+  meson ninja-build cmake gcc gcc-c++ make nasm yasm pkgconf-pkg-config \
+  bison flex gperf" >/tmp/desktop-dnf-tools.log 2>&1 \
+  || { tail -30 /tmp/desktop-dnf-tools.log >&2; die "基础构建工具链安装失败（meson/ninja/cmake/bison 缺失），桌面集成中止"; }
 
 # 开发库与运行时（缺失不致命，后续编译按需报错）。
 # 注意：seatd / libseat-devel 在 openEuler 仓库不存在（本就要源码编译），务必剔除，否则 dnf 因 No match 整笔中止。
