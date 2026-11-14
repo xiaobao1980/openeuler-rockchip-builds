@@ -526,7 +526,7 @@ for _INT in "${_INTS[@]}"; do
     none|"") : ;;   # 无集成
     iot)
       log "集成安装：iot（${IOT_STACK:-node-red,mosquitto}）"
-      [ -x "$HERE/integrate-iot.sh" ] || die "找不到 scripts/integrate-iot.sh"
+      [ -f "$HERE/integrate-iot.sh" ] || die "找不到 scripts/integrate-iot.sh"
       mount_chroot
       # integrate-iot.sh 自己也会检查挂载点，这里的挂载是幂等的
       bash "$HERE/integrate-iot.sh" "$R" \
@@ -547,7 +547,7 @@ for _INT in "${_INTS[@]}"; do
       ;;
     desktop)
       log "集成安装：desktop（${DESKTOP_FLAVOR:-both}）"
-      [ -x "$HERE/integrate-desktop.sh" ] || die "找不到 scripts/integrate-desktop.sh"
+      [ -f "$HERE/integrate-desktop.sh" ] || die "找不到 scripts/integrate-desktop.sh"
       mount_chroot
       bash "$HERE/integrate-desktop.sh" "$R" \
         --flavor="${DESKTOP_FLAVOR:-both}" \
