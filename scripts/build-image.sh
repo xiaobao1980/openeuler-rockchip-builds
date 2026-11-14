@@ -553,6 +553,7 @@ for _INT in "${_INTS[@]}"; do
         --flavor="${DESKTOP_FLAVOR:-both}" \
         --mpv-x11="${MPV_X11:-1}" \
         --admin-user="${ADMIN_USER:-iot}" \
+        --kiosk="${KIOSK:-0}" \
         || die "集成安装(desktop)失败"
       umount_chroot
       info "集成后 rootfs: $(du -sh "$R" | cut -f1)"

@@ -3,7 +3,7 @@
 # 集成安装：把 X11(UKUI) + Wayland(labwc) 双桌面 + rkmpp 媒体栈烘焙进「离线 rootfs」
 #
 # 与 integrate-iot.sh 同接口：
-#   sudo bash integrate-desktop.sh <rootfs目录> [--flavor=both|x11|wayland] [--mpv-x11=1] [--admin-user=iot]
+#   sudo bash integrate-desktop.sh <rootfs目录> [--flavor=both|x11|wayland] [--mpv-x11=1] [--admin-user=iot] [--kiosk=0|1] [--kiosk-video=<文件>]
 #
 # 设计要点：
 #   ① 由 build-image.sh 在 chroot 已挂载的前提下调用；本脚本再做幂等挂载 + resolv 修复
@@ -23,11 +23,15 @@ shift || true
 FLAVOR="${DESKTOP_FLAVOR:-both}"
 MPV_X11="${MPV_X11:-1}"
 ADMIN_USER="${ADMIN_USER:-iot}"
+KIOSK="${KIOSK:-0}"
+KIOSK_VIDEO="${KIOSK_VIDEO:-}"
 for a in "$@"; do
   case "$a" in
     --flavor=*)       FLAVOR="${a#*=}" ;;
     --mpv-x11=*)      MPV_X11="${a#*=}" ;;
     --admin-user=*)   ADMIN_USER="${a#*=}" ;;
+    --kiosk=*)        KIOSK="${a#*=}" ;;
+    --kiosk-video=*)  KIOSK_VIDEO="${a#*=}" ;;
     *) echo "未知参数: $a" >&2; exit 2 ;;
   esac
 done
@@ -41,6 +45,15 @@ info() { printf '      %s\n' "$*"; }
 warn() { printf '\033[1;33m[DESKTOP-WARN] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[DESKTOP-ERR] %s\033[0m\n' "$*" >&2; exit 1; }
 want() { case ",$FLAVOR," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+# 规范化 KIOSK 为 1/0（兼容工作流传入的 true/false/yes/on）
+case "$KIOSK" in 1|true|yes|on|TRUE) KIOSK=1 ;; *) KIOSK=0 ;; esac
+
+# kiosk 展示模式隐含需要 wayland(labwc)：flavor 不含 wayland 时自动升为 both
+if [ "$KIOSK" = "1" ] && ! want wayland && ! want both; then
+  warn "kiosk 需要 wayland(labwc)，已将 flavor 由 $FLAVOR 自动升为 both"
+  FLAVOR=both
+fi
 
 [ "$(id -u)" = 0 ] || die "需要 root（要 chroot + mount）"
 [ -d "$R/etc" ] || die "$R 不像 rootfs"
@@ -335,6 +348,7 @@ cr "$DNFC install lightdm" >/tmp/desktop-lightdm.log 2>&1 \
 # 默认会话：both/wayland -> labwc(Wayland)；x11 -> ukui(X11)
 DEF_SESSION=labwc
 want x11 && ! want both && DEF_SESSION=ukui
+[ "$KIOSK" = "1" ] && DEF_SESSION=labwc
 
 mkdir -p "$R/etc/lightdm/lightdm.conf.d"
 cat > "$R/etc/lightdm/lightdm.conf.d/10-autologin.conf" <<EOF
@@ -453,6 +467,68 @@ chmod 644 "$R/usr/share/applications/mpv.desktop"
 info "mpv-auto / mpv.conf / udev 已写"
 
 # ---------------------------------------------------------------------------
+# 7.5 kiosk 展示模式（可选）：labwc 会话 autostart 直接全屏播 mpv
+# ---------------------------------------------------------------------------
+if [ "$KIOSK" = "1" ]; then
+  log "启用 kiosk 展示模式（开机自动全屏播 mpv）"
+  DEF_SESSION=labwc
+
+  # kiosk 播放脚本：自动探测视频目录（/home/*/Videos 或 /opt/kiosk），可用 KIOSK_VIDEO 直接指定单个文件
+  cat > "$R/usr/local/bin/kiosk-play.sh" <<'KOEOF'
+#!/bin/sh
+# kiosk 展示：全屏循环播放视频（rk35xx rkmpp 硬解 + wayland 后端）
+# 可用环境变量 KIOSK_VIDEO=<单个文件> 或 KIOSK_DIR=<目录> 覆盖默认探测
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+VIDEO="${KIOSK_VIDEO:-}"
+DIR="${KIOSK_DIR:-}"
+if [ -z "$DIR" ]; then
+  for d in /home/*/Videos /opt/kiosk; do
+    [ -d "$d" ] && DIR="$d" && break
+  done
+fi
+if [ -z "$VIDEO" ] && [ -n "$DIR" ]; then
+  VIDEO=$(find "$DIR" -maxdepth 2 -iname '*.mp4' 2>/dev/null | head -1)
+fi
+while true; do
+  if [ -n "$VIDEO" ]; then
+    mpv --no-terminal --fs --loop=inf --hwdec=rkmpp --vo=gpu --profile=fast \
+      --no-border --cursor-autohide=always "$VIDEO"
+  fi
+  # 无视频时安静等待：每 5 秒重探测目录，直到出现 mp4 再播（不刷日志）
+  if [ -z "$VIDEO" ]; then
+    [ -z "$DIR" ] && for d in /home/*/Videos /opt/kiosk; do [ -d "$d" ] && DIR="$d" && break; done
+    VIDEO=$( [ -n "$DIR" ] && find "$DIR" -maxdepth 2 -iname '*.mp4' 2>/dev/null | head -1 )
+  fi
+  sleep 5
+done
+KOEOF
+  # 构建期固化指定视频：把 --kiosk-video 值注入脚本（运行时优先于目录探测）
+  if [ -n "$KIOSK_VIDEO" ]; then
+    sed -i "1a KIOSK_VIDEO='$KIOSK_VIDEO'" "$R/usr/local/bin/kiosk-play.sh"
+    info "已固化 KIOSK_VIDEO=$KIOSK_VIDEO 进 kiosk-play.sh"
+  fi
+  chmod 755 "$R/usr/local/bin/kiosk-play.sh"
+  info "kiosk-play.sh 已写（默认探测 /home/*/Videos 或 /opt/kiosk，可用 KIOSK_VIDEO 覆盖）"
+
+  # labwc autostart：系统级兜底 + 用户级（lightdm autologin 到 $ADMIN_USER 时读此处）
+  mkdir -p "$R/etc/xdg/labwc"
+  cat > "$R/etc/xdg/labwc/autostart" <<'KOEOF'
+#!/bin/sh
+/usr/local/bin/kiosk-play.sh &
+KOEOF
+  chmod 755 "$R/etc/xdg/labwc/autostart"
+  if id -u "$ADMIN_USER" >/dev/null 2>&1 && [ -d "$R/home/$ADMIN_USER" ]; then
+    mkdir -p "$R/home/$ADMIN_USER/.config/labwc"
+    cp "$R/etc/xdg/labwc/autostart" "$R/home/$ADMIN_USER/.config/labwc/autostart"
+    chmod 755 "$R/home/$ADMIN_USER/.config/labwc/autostart"
+    cr "chown -R $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/.config" 2>/dev/null || true
+    info "用户级 autostart 已写 /home/$ADMIN_USER/.config/labwc/autostart"
+  fi
+  info "kiosk：labwc 会话启动后直接全屏播放 mpv"
+fi
+
+# ---------------------------------------------------------------------------
 # 8. 设为图形界面默认启动 + 启用 lightdm
 # ---------------------------------------------------------------------------
 log "设置 graphical.target 默认 + 启用 lightdm"
@@ -476,5 +552,7 @@ rm -rf "$R/tmp"/* 2>/dev/null || true
 
 info "桌面集成后 rootfs: $(du -sh "$R" | cut -f1)"
 log "桌面集成安装完成"
-info "桌面组合: $FLAVOR / autologin: $ADMIN_USER / 会话: $DEF_SESSION"
+_KIOSK_TAG=""
+[ "$KIOSK" = "1" ] && _KIOSK_TAG=" / kiosk=开"
+info "桌面组合: $FLAVOR / autologin: $ADMIN_USER / 会话: $DEF_SESSION$_KIOSK_TAG"
 info "mpv 三后端: drm + x11egl + wayland（rkmpp 硬解）"

@@ -44,6 +44,11 @@ on:
           - both
           - x11
           - wayland
+      kiosk:
+        description: "kiosk 展示模式：labwc 会话启动后直接全屏循环播 mpv（rkmpp 硬解）。默认探测 /home/<管理员>/Videos 或 /opt/kiosk 下的 mp4，也可经 KIOSK_VIDEO 指定；选开后 flavor 自动含 Wayland"
+        type: boolean
+        required: false
+        default: false
       selinux:
         description: "SELinux（首次 bring-up 必须 disabled；enforcing 下 chroot 改密码会失败）"
         type: choice
@@ -183,6 +188,7 @@ jobs:
       INTEGRATE: "desktop"
       DESKTOP_FLAVOR: ${{ inputs.desktop }}
       MPV_X11: "1"
+      KIOSK: ${{ inputs.kiosk && '1' || '0' }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
