@@ -102,8 +102,15 @@ log "桌面组合: $FLAVOR（autologin 用户: $ADMIN_USER）"
 # ---------------------------------------------------------------------------
 log "安装基础依赖（dnf）"
 DNFC="dnf -y --setopt=install_weak_deps=False --setopt=timeout=30 --setopt=retries=2"
+
+# 关键构建工具链（必须成功，否则后续 meson/ninja/cmake 缺失无法编译；单独成笔避免被坏包名拖垮整笔事务）
 cr "$DNFC install tar xz git curl ca-certificates shadow util-linux hostname findutils \
-  meson ninja-build cmake gcc gcc-c++ make nasm yasm pkgconf-pkg-config \
+  meson ninja-build cmake gcc gcc-c++ make nasm yasm pkgconf-pkg-config" >/tmp/desktop-dnf-tools.log 2>&1 \
+  || { tail -30 /tmp/desktop-dnf-tools.log >&2; die "基础构建工具链安装失败（meson/ninja/cmake 缺失），桌面集成中止"; }
+
+# 开发库与运行时（缺失不致命，后续编译按需报错）。
+# 注意：seatd / libseat-devel 在 openEuler 仓库不存在（本就要源码编译），务必剔除，否则 dnf 因 No match 整笔中止。
+cr "$DNFC install \
   libdrm-devel expat-devel libffi-devel \
   libX11-devel libXext-devel libXrandr-devel libXv-devel libxcb-devel \
   xcb-util-wm-devel xcb-util-renderutil-devel xcb-util-keysyms-devel xcb-util-image-devel xcb-util-cursor-devel \
@@ -112,9 +119,8 @@ cr "$DNFC install tar xz git curl ca-certificates shadow util-linux hostname fin
   freetype-devel fontconfig-devel mesa-libGL-devel mesa-libEGL-devel mesa-libgbm-devel \
   libass-devel uchardet-devel lua-devel x264-devel x265-devel libdav1d-devel gnutls-devel \
   libudev-devel systemd-devel hwdata \
-  xorg-x11-server-Xwayland xorg-x11-server-Xwayland-devel xterm \
-  seatd libseat-devel" >/tmp/desktop-dnf.log 2>&1 \
-  || { tail -30 /tmp/desktop-dnf.log >&2; warn "部分依赖安装失败，后续阶段按需报错"; }
+  xorg-x11-server-Xwayland xorg-x11-server-Xwayland-devel xterm" >/tmp/desktop-dnf.log 2>&1 \
+  || { tail -30 /tmp/desktop-dnf.log >&2; warn "部分开发库安装失败，后续阶段按需报错"; }
 
 # ---------------------------------------------------------------------------
 # 1. git clone（宿主机执行，网络更稳）
