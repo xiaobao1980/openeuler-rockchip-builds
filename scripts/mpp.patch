@@ -1,0 +1,367 @@
+From 1430057f36c17262e294727b55c2d97e68047006 Mon Sep 17 00:00:00 2001
+From: boogie <boogiepop@gmx.com>
+Date: Sun, 23 Mar 2025 17:19:55 +0100
+Subject: [PATCH 1/3] add rkmpp hw device
+
+---
+ video/drmprime.c                 |  5 +++++
+ video/hwdec.c                    |  1 +
+ video/hwdec.h                    |  1 +
+ video/out/gpu/hwdec.c            |  2 ++
+ video/out/hwdec/hwdec_drmprime.c | 19 ++++++++++++++++++-
+ 5 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/video/drmprime.c b/video/drmprime.c
+index 64d793fcd69d9..fff297356ab92 100644
+--- a/video/drmprime.c
++++ b/video/drmprime.c
+@@ -41,3 +41,8 @@ const struct hwcontext_fns hwcontext_fns_drmprime = {
+     .av_hwdevice_type = AV_HWDEVICE_TYPE_DRM,
+     .create_dev = drm_create_standalone,
+ };
++
++const struct hwcontext_fns hwcontext_fns_rkmpp = {
++    .av_hwdevice_type = AV_HWDEVICE_TYPE_RKMPP,
++    .create_dev = drm_create_standalone,
++};
+diff --git a/video/hwdec.c b/video/hwdec.c
+index deba518e82c25..a1371a6f3162b 100644
+--- a/video/hwdec.c
++++ b/video/hwdec.c
+@@ -124,6 +124,7 @@ static const struct hwcontext_fns *const hwcontext_fns[] = {
+ #endif
+ #if HAVE_DRM
+     &hwcontext_fns_drmprime,
++    &hwcontext_fns_rkmpp,
+ #endif
+ #if HAVE_VAAPI
+     &hwcontext_fns_vaapi,
+diff --git a/video/hwdec.h b/video/hwdec.h
+index e7734e5d7e034..926eba7d2a79a 100644
+--- a/video/hwdec.h
++++ b/video/hwdec.h
+@@ -118,6 +118,7 @@ const struct hwcontext_fns *hwdec_get_hwcontext_fns(int av_hwdevice_type);
+ extern const struct hwcontext_fns hwcontext_fns_cuda;
+ extern const struct hwcontext_fns hwcontext_fns_d3d11;
+ extern const struct hwcontext_fns hwcontext_fns_drmprime;
++extern const struct hwcontext_fns hwcontext_fns_rkmpp;
+ extern const struct hwcontext_fns hwcontext_fns_dxva2;
+ extern const struct hwcontext_fns hwcontext_fns_vaapi;
+ extern const struct hwcontext_fns hwcontext_fns_vdpau;
+diff --git a/video/out/gpu/hwdec.c b/video/out/gpu/hwdec.c
+index be39c507d028a..0d5323f557139 100644
+--- a/video/out/gpu/hwdec.c
++++ b/video/out/gpu/hwdec.c
+@@ -36,6 +36,7 @@ extern const struct ra_hwdec_driver ra_hwdec_dxva2dxgi;
+ extern const struct ra_hwdec_driver ra_hwdec_cuda;
+ extern const struct ra_hwdec_driver ra_hwdec_drmprime;
+ extern const struct ra_hwdec_driver ra_hwdec_drmprime_overlay;
++extern const struct ra_hwdec_driver ra_hwdec_drmprime_rkmpp;
+ extern const struct ra_hwdec_driver ra_hwdec_aimagereader;
+ extern const struct ra_hwdec_driver ra_hwdec_vulkan;
+ 
+@@ -72,6 +73,7 @@ const struct ra_hwdec_driver *const ra_hwdec_drivers[] = {
+ #if HAVE_DRM
+     &ra_hwdec_drmprime,
+     &ra_hwdec_drmprime_overlay,
++    &ra_hwdec_drmprime_rkmpp,
+ #endif
+ #if HAVE_ANDROID_MEDIA_NDK
+     &ra_hwdec_aimagereader,
+diff --git a/video/out/hwdec/hwdec_drmprime.c b/video/out/hwdec/hwdec_drmprime.c
+index 7869eb124a4f0..86436a3ba3dae 100644
+--- a/video/out/hwdec/hwdec_drmprime.c
++++ b/video/out/hwdec/hwdec_drmprime.c
+@@ -115,7 +115,7 @@ static int init(struct ra_hwdec *hw)
+     MP_VERBOSE(hw, "Using DRM device: %s\n", device_path);
+ 
+     int ret = av_hwdevice_ctx_create(&p->hwctx.av_device_ref,
+-                                     AV_HWDEVICE_TYPE_DRM,
++                                     hw->driver->device_type,
+                                      device_path, NULL, 0);
+     talloc_free(tmp);
+     if (ret != 0) {
+@@ -318,3 +318,20 @@ const struct ra_hwdec_driver ra_hwdec_drmprime = {
+         .unmap = mapper_unmap,
+     },
+ };
++
++
++const struct ra_hwdec_driver ra_hwdec_drmprime_rkmpp = {
++    .name = "drmprime_rkmpp",
++    .priv_size = sizeof(struct priv_owner),
++    .imgfmts = {IMGFMT_DRMPRIME, 0},
++    .device_type = AV_HWDEVICE_TYPE_RKMPP,
++    .init = init,
++    .uninit = uninit,
++    .mapper = &(const struct ra_hwdec_mapper_driver){
++        .priv_size = sizeof(struct dmabuf_interop_priv),
++        .init = mapper_init,
++        .uninit = mapper_uninit,
++        .map = mapper_map,
++        .unmap = mapper_unmap,
++    },
++};
+
+From 38e68a53b289f4594544843ee61af922fce55225 Mon Sep 17 00:00:00 2001
+From: nyanmisaka <nst799610810@gmail.com>
+Date: Sun, 23 Mar 2025 20:07:51 +0100
+Subject: [PATCH 2/3] add nv15/nv20 support
+
+---
+ video/fmt-conversion.c              |  4 ++++
+ video/img_format.c                  | 14 ++++++++++++++
+ video/img_format.h                  |  2 ++
+ video/out/gpu/ra.c                  |  6 ++++++
+ video/out/hwdec/dmabuf_interop_gl.c | 22 ++++++++++++++++++++++
+ video/out/hwdec/hwdec_drmprime.c    | 13 ++++++++++++-
+ video/out/opengl/formats.c          |  6 ++++++
+ video/out/opengl/ra_gl.c            | 22 ++++++++++++++++++++++
+ 8 files changed, 88 insertions(+), 1 deletion(-)
+
+diff --git a/video/fmt-conversion.c b/video/fmt-conversion.c
+index 39dead4600a77..0e554ad8f21fe 100644
+--- a/video/fmt-conversion.c
++++ b/video/fmt-conversion.c
+@@ -56,6 +56,10 @@ static const struct {
+     {IMGFMT_RGB30,  AV_PIX_FMT_X2RGB10},
+ #endif
+ 
++#ifdef AV_PIX_FMT_X2BGR10
++    {IMGFMT_BGR30,  AV_PIX_FMT_X2BGR10},
++#endif
++
+     {IMGFMT_VDPAU, AV_PIX_FMT_VDPAU},
+     {IMGFMT_VIDEOTOOLBOX,   AV_PIX_FMT_VIDEOTOOLBOX},
+     {IMGFMT_MEDIACODEC, AV_PIX_FMT_MEDIACODEC},
+diff --git a/video/img_format.c b/video/img_format.c
+index a79534e247fdd..7dd2e7ba42167 100644
+--- a/video/img_format.c
++++ b/video/img_format.c
+@@ -72,6 +72,20 @@ static const struct mp_imgfmt_entry mp_imgfmt_list[] = {
+             .comps = { {0, 20, 10}, {0, 10, 10}, {0, 0, 10} },
+         },
+     },
++    [IMGFMT_BGR30 - IMGFMT_CUST_BASE] = {
++        .name = "bgr30",
++        .desc = {
++            .flags = MP_IMGFLAG_RGB,
++            .comps = { {0, 0, 10}, {0, 10, 10}, {0, 20, 10} },
++        },
++    },
++    [IMGFMT_BGR30_YUV - IMGFMT_CUST_BASE] = {
++        .name = "bgr30_yuv",
++        .desc = {
++            .flags = MP_IMGFLAG_COLOR_YUV,
++            .comps = { {0, 0, 10}, {0, 10, 10}, {0, 20, 10} },
++        },
++    },
+     [IMGFMT_YAP8 - IMGFMT_CUST_BASE] = {
+         .name = "yap8",
+         .desc = {
+diff --git a/video/img_format.h b/video/img_format.h
+index 59e614ae64453..0ae99d46d5b73 100644
+--- a/video/img_format.h
++++ b/video/img_format.h
+@@ -299,6 +299,8 @@ enum mp_imgfmt {
+ 
+     // Accessed with bit-shifts, uint32_t units.
+     IMGFMT_RGB30,               // 2pad 10r 10g 10b (MSB to LSB)
++    IMGFMT_BGR30,               // 2pad 10b 10g 10r (MSB to LSB)
++    IMGFMT_BGR30_YUV,           // BGR30 in YUV colorspace. Used for importing NV15/NV20.
+ 
+     // Fringe formats for fringe RGB format repacking.
+     IMGFMT_Y1,      // gray with 1 bit per pixel
+diff --git a/video/out/gpu/ra.c b/video/out/gpu/ra.c
+index bc872c06fc14b..5845081ea9434 100644
+--- a/video/out/gpu/ra.c
++++ b/video/out/gpu/ra.c
+@@ -141,6 +141,9 @@ static const struct glsl_fmt ra_glsl_fmts[] = {
+     {RA_CTYPE_UNORM, 4, {16, 16, 16, 16}, "rgba16"},
+     {RA_CTYPE_UNORM, 4, {10, 10, 10,  2}, "rgb10_a2"},
+ 
++    {RA_CTYPE_UNORM, 4, {10, 10, 10,  2}, "bgr10_a2"},
++    {RA_CTYPE_UNORM, 4, {10, 10, 10,  2}, "bgr10_a2_yuv"},
++
+     {RA_CTYPE_UINT,  1, {8},              "r8ui"},
+     {RA_CTYPE_UINT,  1, {16},             "r16ui"},
+     {RA_CTYPE_UINT,  1, {32},             "r32ui"},
+@@ -151,6 +154,9 @@ static const struct glsl_fmt ra_glsl_fmts[] = {
+     {RA_CTYPE_UINT,  4, {16, 16, 16, 16}, "rgba16ui"},
+     {RA_CTYPE_UINT,  4, {32, 32, 32, 32}, "rgba32ui"},
+     {RA_CTYPE_UINT,  4, {10, 10, 10,  2}, "rgb10_a2ui"},
++
++    {RA_CTYPE_UINT,  4, {10, 10, 10,  2}, "bgr10_a2ui"},
++    {RA_CTYPE_UINT,  4, {10, 10, 10,  2}, "bgr10_a2_yuvui"},
+ };
+ 
+ const char *ra_fmt_glsl_format(const struct ra_format *fmt)
+diff --git a/video/out/hwdec/dmabuf_interop_gl.c b/video/out/hwdec/dmabuf_interop_gl.c
+index 6adddb75ce012..34cfaabe550f0 100644
+--- a/video/out/hwdec/dmabuf_interop_gl.c
++++ b/video/out/hwdec/dmabuf_interop_gl.c
+@@ -241,6 +241,13 @@ static bool vaapi_gl_map(struct ra_hwdec_mapper *mapper,
+ #endif
+                 format[0] = DRM_FORMAT_R16;
+                 format[1] = DRM_FORMAT_GR1616;
++#ifdef DRM_FORMAT_NV15
++            case DRM_FORMAT_NV15:
++#endif
++#ifdef DRM_FORMAT_NV20
++            case DRM_FORMAT_NV20:
++            /* Two-planes NV15/NV20 will be imported as single-plane BGR30 */
++#endif
+                 break;
+             default:
+                 mp_msg(mapper->log, probing ? MSGL_DEBUG : MSGL_ERR,
+@@ -292,6 +299,21 @@ static bool vaapi_gl_map(struct ra_hwdec_mapper *mapper,
+             ADD_ATTRIB(EGL_HEIGHT, p_mapper->tex[n]->params.h);
+             ADD_PLANE_ATTRIBS(0);
+ 
++#if defined(DRM_FORMAT_NV15) || defined(DRM_FORMAT_NV20)
++            switch (format[0]) {
++#ifdef DRM_FORMAT_NV15
++            case DRM_FORMAT_NV15:
++#endif
++#ifdef DRM_FORMAT_NV20
++            case DRM_FORMAT_NV20:
++            /* Two-planes NV15/NV20 will be imported as single-plane BGR30 */
++#endif
++                ++j;
++                ADD_PLANE_ATTRIBS(1);
++                break;
++            }
++#endif
++
+             p->images[n] = p->CreateImageKHR(eglGetCurrentDisplay(),
+                 EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
+             if (!p->images[n]) {
+diff --git a/video/out/hwdec/hwdec_drmprime.c b/video/out/hwdec/hwdec_drmprime.c
+index 86436a3ba3dae..6dc7265ac0499 100644
+--- a/video/out/hwdec/hwdec_drmprime.c
++++ b/video/out/hwdec/hwdec_drmprime.c
+@@ -133,6 +133,7 @@ static int init(struct ra_hwdec *hw)
+     MP_TARRAY_APPEND(p, p->formats, num_formats, IMGFMT_420P);
+     MP_TARRAY_APPEND(p, p->formats, num_formats, pixfmt2imgfmt(AV_PIX_FMT_NV16));
+     MP_TARRAY_APPEND(p, p->formats, num_formats, IMGFMT_P010);
++    MP_TARRAY_APPEND(p, p->formats, num_formats, IMGFMT_BGR30_YUV);
+ #ifdef AV_PIX_FMT_P210
+     MP_TARRAY_APPEND(p, p->formats, num_formats, pixfmt2imgfmt(AV_PIX_FMT_P210));
+ #endif
+@@ -203,6 +204,13 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
+     const char* fmt_name = mp_imgfmt_to_name(mapper->src_params.hw_subfmt);
+     if (strcmp(fmt_name, "rpi4_8") == 0 || strcmp(fmt_name, "rpi4_10") == 0)
+         mapper->dst_params.imgfmt = IMGFMT_NV12;
++    /*
++     * NV15 and NV20 are tightly packed variant of P010 and P210 formats,
++     * which can be sampled as DRM_FORMAT_XBGR2101010 in YUV colorspace.
++     * These two formats are in the process of being upstreamed to ffmpeg.
++     */
++    else if (strcmp(fmt_name, "nv15") == 0 || strcmp(fmt_name, "nv20") == 0)
++        mapper->dst_params.imgfmt = IMGFMT_BGR30_YUV;
+     else
+         mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
+     mapper->dst_params.hw_subfmt = 0;
+@@ -281,7 +289,10 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
+         num_returned_planes += p->desc.layers[i].nb_planes;
+     }
+ 
+-    if (p->num_planes != 0 && p->num_planes != num_returned_planes) {
++    if (p->num_planes != 0 &&
++        p->num_planes != num_returned_planes &&
++        // Two-planes NV15/NV20 will be imported as single-plane BGR30.
++        mapper->dst_params.imgfmt != IMGFMT_BGR30_YUV) {
+         MP_ERR(mapper,
+                "Mapped surface with format '%s' has unexpected number of planes. "
+                "(%d layers and %d planes, but expected %d planes)\n",
+diff --git a/video/out/opengl/formats.c b/video/out/opengl/formats.c
+index dd0e89d54d89a..89e99f9a2bea4 100644
+--- a/video/out/opengl/formats.c
++++ b/video/out/opengl/formats.c
+@@ -91,6 +91,12 @@ const struct gl_format gl_formats[] = {
+     {"rgba12",  GL_RGBA12,   GL_RGBA,            T_U16, F_CF | F_GL2 | F_GL3},
+     {"rgb10",   GL_RGB10,    GL_RGB,             T_U16, F_CF | F_GL2 | F_GL3},
+ 
++    // FBO formats for imported format DRM_FORMAT_{NV15,NV20} (in YUV colorpsace).
++    {"bgr10_a2",     GL_RGB10_A2, GL_RGBA,
++     GL_UNSIGNED_INT_2_10_10_10_REV,                    F_CF | F_GL3 | F_ES3},
++    {"bgr10_a2_yuv", GL_RGB10_A2, GL_RGBA,
++     GL_UNSIGNED_INT_2_10_10_10_REV,                    F_CF | F_GL3 | F_ES3},
++
+     // Special formats.
+     {"rgb565",  GL_RGB8,     GL_RGB,
+      GL_UNSIGNED_SHORT_5_6_5,                           F_TF | F_GL2 | F_GL3},
+diff --git a/video/out/opengl/ra_gl.c b/video/out/opengl/ra_gl.c
+index 0d38f821428ec..42f849c953a0b 100644
+--- a/video/out/opengl/ra_gl.c
++++ b/video/out/opengl/ra_gl.c
+@@ -201,6 +201,28 @@ static int ra_init_gl(struct ra *ra, GL *gl)
+                 desc->components[0][i] = 3 - i;
+             desc->chroma_w = desc->chroma_h = 1;
+         }
++        if (strcmp(fmt->name, "bgr10_a2") == 0) {
++            fmt->special_imgfmt = IMGFMT_BGR30;
++            struct ra_imgfmt_desc *desc = talloc_zero(fmt, struct ra_imgfmt_desc);
++            fmt->special_imgfmt_desc = desc;
++            desc->component_bits = 10;
++            desc->num_planes = 1;
++            desc->planes[0] = fmt;
++            for (int i = 0; i < 3; i++)
++                desc->components[0][i] = i + 1;
++            desc->chroma_w = desc->chroma_h = 1;
++        }
++        if (strcmp(fmt->name, "bgr10_a2_yuv") == 0) {
++            fmt->special_imgfmt = IMGFMT_BGR30_YUV;
++            struct ra_imgfmt_desc *desc = talloc_zero(fmt, struct ra_imgfmt_desc);
++            fmt->special_imgfmt_desc = desc;
++            desc->component_bits = 10;
++            desc->num_planes = 1;
++            desc->planes[0] = fmt;
++            for (int i = 0; i < 3; i++)
++                desc->components[0][i] = i + 1;
++            desc->chroma_w = desc->chroma_h = 1;
++        }
+         if (strcmp(fmt->name, "appleyp") == 0) {
+             fmt->special_imgfmt = IMGFMT_UYVY;
+             struct ra_imgfmt_desc *desc = talloc_zero(fmt, struct ra_imgfmt_desc);
+
+From 8b4d286a3e4f3b730e22cb6e4fea11e5a696a36a Mon Sep 17 00:00:00 2001
+From: boogie <boogiepop@gmx.com>
+Date: Tue, 25 Mar 2025 20:35:10 +0100
+Subject: [PATCH 3/3] rkmpp drm prime overlay hwdec
+
+---
+ video/out/gpu/hwdec.c                    |  1 +
+ video/out/hwdec/hwdec_drmprime_overlay.c | 10 ++++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/video/out/gpu/hwdec.c b/video/out/gpu/hwdec.c
+index 0d5323f557139..d1db26bea5f6f 100644
+--- a/video/out/gpu/hwdec.c
++++ b/video/out/gpu/hwdec.c
+@@ -37,6 +37,7 @@ extern const struct ra_hwdec_driver ra_hwdec_cuda;
+ extern const struct ra_hwdec_driver ra_hwdec_drmprime;
+ extern const struct ra_hwdec_driver ra_hwdec_drmprime_overlay;
+ extern const struct ra_hwdec_driver ra_hwdec_drmprime_rkmpp;
++extern const struct ra_hwdec_driver ra_hwdec_drmprime_rkmpp_overlay;
+ extern const struct ra_hwdec_driver ra_hwdec_aimagereader;
+ extern const struct ra_hwdec_driver ra_hwdec_vulkan;
+ 
+diff --git a/video/out/hwdec/hwdec_drmprime_overlay.c b/video/out/hwdec/hwdec_drmprime_overlay.c
+index 61514f8e893d3..286f0372f7a2c 100644
+--- a/video/out/hwdec/hwdec_drmprime_overlay.c
++++ b/video/out/hwdec/hwdec_drmprime_overlay.c
+@@ -333,3 +333,13 @@ const struct ra_hwdec_driver ra_hwdec_drmprime_overlay = {
+     .overlay_frame = overlay_frame,
+     .uninit = uninit,
+ };
++
++const struct ra_hwdec_driver ra_hwdec_drmprime_rkmpp_overlay = {
++    .name = "drmprime-overlay",
++    .priv_size = sizeof(struct priv),
++    .imgfmts = {IMGFMT_DRMPRIME, 0},
++    .device_type = AV_HWDEVICE_TYPE_RKMPP,
++    .init = init,
++    .overlay_frame = overlay_frame,
++    .uninit = uninit,
++};

@@ -518,27 +518,48 @@ umount_chroot() {
   umount "$R/proc" 2>/dev/null;    umount "$R/sys" 2>/dev/null
 }
 
-if [ "$INTEGRATE" != "none" ]; then
-  log "集成安装：$INTEGRATE（$IOT_STACK）"
-  [ -x "$HERE/integrate-iot.sh" ] || die "找不到 scripts/integrate-iot.sh"
-  mount_chroot
-  # integrate-iot.sh 自己也会检查挂载点，这里的挂载是幂等的
-  bash "$HERE/integrate-iot.sh" "$R" \
-    --stack="${IOT_STACK:-node-red,mosquitto}" \
-    --mqtt-user="${IOT_MQTT_USER:-user-mqtt}" \
-    --mqtt-pass="${IOT_MQTT_PASS:-Ab123456}" \
-    --mqtt-port="${IOT_MQTT_PORT:-1883}" \
-    --ws-port="${IOT_WS_PORT:-8083}" \
-    --nodered-port="${IOT_NODERED_PORT:-1880}" \
-    --z2m-port="${IOT_Z2M_PORT:-8080}" \
-    --coord="${IOT_COORD:-}" \
-    --adapter="${IOT_ADAPTER:-zstack}" \
-    --node-version="${IOT_NODE_VERSION:-22}" \
-    || die "集成安装失败"
-  # 先卸载再统计：/proc 还挂着时 du 会走进进程目录，刷一屏 "cannot access .../fd"
-  umount_chroot
-  info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
-fi
+# INTEGRATE 支持逗号分隔组合：none | iot | desktop（例：iot,desktop 同时烘焙）
+# 每个分支独立 mount/umount chroot（mount_chroot 幂等，重复挂载安全）
+IFS=',' read -ra _INTS <<< "${INTEGRATE:-none}"
+for _INT in "${_INTS[@]}"; do
+  case "$_INT" in
+    none|"") : ;;   # 无集成
+    iot)
+      log "集成安装：iot（${IOT_STACK:-node-red,mosquitto}）"
+      [ -x "$HERE/integrate-iot.sh" ] || die "找不到 scripts/integrate-iot.sh"
+      mount_chroot
+      # integrate-iot.sh 自己也会检查挂载点，这里的挂载是幂等的
+      bash "$HERE/integrate-iot.sh" "$R" \
+        --stack="${IOT_STACK:-node-red,mosquitto}" \
+        --mqtt-user="${IOT_MQTT_USER:-user-mqtt}" \
+        --mqtt-pass="${IOT_MQTT_PASS:-Ab123456}" \
+        --mqtt-port="${IOT_MQTT_PORT:-1883}" \
+        --ws-port="${IOT_WS_PORT:-8083}" \
+        --nodered-port="${IOT_NODERED_PORT:-1880}" \
+        --z2m-port="${IOT_Z2M_PORT:-8080}" \
+        --coord="${IOT_COORD:-}" \
+        --adapter="${IOT_ADAPTER:-zstack}" \
+        --node-version="${IOT_NODE_VERSION:-22}" \
+        || die "集成安装(iot)失败"
+      # 先卸载再统计：/proc 还挂着时 du 会走进进程目录，刷一屏 "cannot access .../fd"
+      umount_chroot
+      info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+      ;;
+    desktop)
+      log "集成安装：desktop（${DESKTOP_FLAVOR:-both}）"
+      [ -x "$HERE/integrate-desktop.sh" ] || die "找不到 scripts/integrate-desktop.sh"
+      mount_chroot
+      bash "$HERE/integrate-desktop.sh" "$R" \
+        --flavor="${DESKTOP_FLAVOR:-both}" \
+        --mpv-x11="${MPV_X11:-1}" \
+        --admin-user="${ADMIN_USER:-iot}" \
+        || die "集成安装(desktop)失败"
+      umount_chroot
+      info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+      ;;
+    *) die "未知 INTEGRATE=$_INT（仅支持 none/iot/desktop，逗号组合）" ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # 8. depmod —— 必须用 rootfs 自带的 depmod，宿主的 kmod 版本不同会写出

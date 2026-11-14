@@ -1,0 +1,343 @@
+name: Build openEuler Desktop Image (RK35xx)
+
+# ============================================================================
+# 「嫁接」+「桌面集成」：在 build-openeuler.yml 拼装基础上，多烘焙一层桌面栈。
+#
+# 与 build-openeuler.yml 的分工：
+#   build-openeuler.yml       纯净 openEuler 用户态（无桌面，4K 播放机基线）
+#   build-openeuler-desktop.yml  X11(UKUI) + Wayland(labwc) 双桌面，预设 iot 自动登录
+#
+# 桌面栈由 scripts/integrate-desktop.sh 在 chroot 内烘焙：
+#   - UKUI（X11 桌面，openEuler 官方源 dnf install ukui）
+#   - labwc + wlroots（Wayland 合成器，openEuler 源无，chroot 内源码编译）
+#   - lightdm 统一显示管理器，autologin-user=iot 进选定会话（both 默认 labwc/Wayland）
+#   - rkmpp 媒体栈（mpp/rga/ffmpeg-rockchip/mpv，x11+drm+wayland 三后端全开）
+#
+# 为什么必须 arm64 原生 runner：chroot 内要原生跑 dnf / meson / ninja / gcc / npm，
+# 全部是原生二进制；x86 + qemu-user 慢一个数量级且 node-gyp 类原生模块易崩。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: "板卡：h96-m9 / 逗号分隔多块 / all(全系98块) / soc:rk3576"
+        type: string
+        required: true
+        default: "h96-m9"
+      oe_version:
+        description: "openEuler 版本（取官方 virtual_machine_img 的 aarch64 qcow2）"
+        type: choice
+        required: true
+        default: 24.03-LTS-SP4
+        options:
+          - 24.03-LTS-SP4
+          - 24.03-LTS-SP3
+          - 24.03-LTS-SP2
+          - 24.03-LTS
+      desktop:
+        description: "桌面组合：both=UKUI(X11)+labwc(Wayland) 都装，默认进 Wayland / x11=仅 UKUI / wayland=仅 labwc"
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - x11
+          - wayland
+      selinux:
+        description: "SELinux（首次 bring-up 必须 disabled；enforcing 下 chroot 改密码会失败）"
+        type: choice
+        required: true
+        default: disabled
+        options:
+          - disabled
+          - permissive
+          - enforcing
+      cma_override:
+        description: "覆盖 CMA（留空=按 SoC 自动：3528/3566/3568→128M, 3576→256M, 3588→512M）"
+        type: string
+        required: false
+        default: ""
+      root_password:
+        description: "root 密码（上板验证后请立即修改）"
+        type: string
+        required: false
+        default: openeuler
+      admin_user:
+        description: "非 root 管理员账号（默认 iot，可改其它用户名；逗号/空格分隔可多个；留空=不创建默认管理员，只留 root）"
+        type: string
+        required: false
+        default: "iot"
+      admin_pw:
+        description: "管理员账号密码（默认 openeuler 为弱口令，上板后请立即改！多个账号统一用此密码）"
+        type: string
+        required: false
+        default: openeuler
+      user_groups:
+        description: "管理员附加组（逗号/空格分隔；留空=仅 wheel，sudo 经 %wheel）"
+        type: string
+        required: false
+        default: ""
+      ssh_pubkey:
+        description: "SSH 公钥（可选）：传入则 root 与所有管理员账号均注入公钥、并关闭密码登录（prohibit-password）"
+        type: string
+        required: false
+        default: ""
+      max_parallel:
+        description: "并发构建数（arm runner 每个都跑满 4 核，建议 2）"
+        type: string
+        required: false
+        default: "2"
+      publish_release:
+        description: "构建成功后发布到 GitHub Releases"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. 解析板卡清单 → 矩阵
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: 解析板卡清单
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      count: ${{ steps.mk.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 同步上游板卡清单
+        run: bash scripts/sync-boards.sh
+
+      - name: 生成矩阵
+        id: mk
+        env:
+          SEL: ${{ inputs.boards }}
+        run: |
+          set -euo pipefail
+          bash scripts/list-boards.sh > /tmp/all.tsv
+          list=$(awk -F'\t' -v sel="$SEL" '
+            BEGIN{ n=split(sel, want, ",") }
+            NF < 4 { next }
+            {
+              hit = 0
+              for (i=1;i<=n;i++) {
+                w = want[i]
+                if (w == "all") hit = 1
+                else if (w == $1) hit = 1
+                else if (substr(w,1,4) == "soc:" && substr(w,5) == $3) hit = 1
+              }
+              if (hit) print $1
+            }' /tmp/all.tsv | jq -R . | jq -sc .)
+          cnt=$(printf '%s' "$list" | jq 'length')
+          echo "matrix={\"board\":$list}" >> "$GITHUB_OUTPUT"
+          echo "count=$cnt" >> "$GITHUB_OUTPUT"
+          MSG="选中 $cnt 块：$(printf '%s' "$list" | jq -r 'join(", ")')"
+          echo "${MSG:0:2000}"
+          if [ "$cnt" -eq 0 ]; then
+            echo "::error::没有匹配的板卡。检查输入 '$SEL'。可用：bash scripts/list-boards.sh"
+            exit 1
+          fi
+
+      - name: 上传清单（可追溯这次用了哪个上游版本）
+        uses: actions/upload-artifact@v4
+        with:
+          name: boards-list
+          path: |
+            boards/boards.tsv
+            /tmp/all.tsv
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2. 逐板构建
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.board }} desktop
+    needs: prepare
+    if: ${{ needs.prepare.outputs.count != '0' }}
+    runs-on: ubuntu-24.04-arm
+    # 桌面版要 chroot 内源码编译 wlroots+labwc+mpp+rga+ffmpeg+mpv，比纯净版重很多
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      BOARD: ${{ matrix.board }}
+      OE_VER: ${{ inputs.oe_version }}
+      SELINUX_MODE: ${{ inputs.selinux }}
+      CMA_OVERRIDE: ${{ inputs.cma_override }}
+      ROOT_PW: ${{ inputs.root_password }}
+      ADMIN_USER: ${{ inputs.admin_user }}
+      ADMIN_PW: ${{ inputs.admin_pw }}
+      ADMIN_GROUPS: ${{ inputs.user_groups }}
+      SSH_PUBKEY: ${{ inputs.ssh_pubkey }}
+      # 无 RTC 板掉电重启归 1970 → HTTPS 全挂（certificate is not yet valid）。
+      # 每次开机自动校时（chronyd -> timesyncd -> HTTP Date 兜底），见 build-image.sh §6a-2
+      TIMESYNC_BOOT: "1"
+      # 桌面集成开关（build-image.sh 据此调用 integrate-desktop.sh）
+      INTEGRATE: "desktop"
+      DESKTOP_FLAVOR: ${{ inputs.desktop }}
+      MPV_X11: "1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 架构断言
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          echo "runner: $arch / $(nproc) core / $(free -g | awk '/Mem:/{print $2}')G RAM / $(df -h / | awk 'NR==2{print $4}') free"
+          [ "$arch" = aarch64 ] || { echo "::error::需要 aarch64 runner"; exit 1; }
+
+      - name: 腾磁盘（arm runner 默认只有 ~14G，桌面版峰值 ~12G）
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          # lvm2：openEuler 整机镜像根分区在 LVM 里，缺 vgchange 根本无法挂载
+          sudo apt-get install -y -qq --no-install-recommends \
+            xz-utils zstd e2fsprogs gdisk parted lvm2 rsync qemu-utils jq
+          for t in xz zstd mkfs.ext4 sgdisk partprobe vgchange rsync qemu-img jq od; do
+            printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+          done
+
+      - name: 解析板级配置
+        id: cfg
+        run: |
+          set -euo pipefail
+          bash scripts/board-resolve.sh "$BOARD" > /tmp/board.conf
+          # shellcheck disable=SC1091
+          . /tmp/board.conf
+
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                --jq '.[].tagName' | grep -E "^boot-${BOARD}-" | head -1 || true)
+          if [ -z "$TAG" ]; then
+            AVAIL=$(gh release list --repo "$GITHUB_REPOSITORY" -L 100 --json tagName \
+                    --jq '.[].tagName' | grep -E '^boot-' | tr '\n' ' ' || true)
+            echo "::error::$BOARD 还没有 boot 资产 Release（期望 boot-${BOARD}-*）。"
+            echo "::error::先发布资产：gh workflow run publish-boot-assets.yml -f board=$BOARD -f armbian_repo=xiaobao1980/armbian-custom-builds -f armbian_tag=<该板的 Armbian Release tag>"
+            echo "::error::或在板上抓：sudo BOARD=$BOARD ./scripts/make-boot-assets.sh --from-dev /dev/mmcblk0"
+            echo "::error::本仓库现有 boot 资产：${AVAIL:-（无）}"
+            exit 1
+          fi
+          echo "boot 资产 Release：$TAG"
+          echo "kver=$KERNEL_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prefix=$IMG_PREFIX" >> "$GITHUB_OUTPUT"
+          echo "soc=$FAMILY" >> "$GITHUB_OUTPUT"
+          echo "dtb=$DTB" >> "$GITHUB_OUTPUT"
+          {
+            echo "### \`$BOARD\` — $MODEL"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| SoC | $FAMILY |"
+            echo "| DTB | \`$DTB\` |"
+            echo "| 内核（board.conf） | \`$KERNEL_VER\`（实际以 boot 资产为准） |"
+            echo "| boot 资产 | \`$TAG\` |"
+            echo "| 桌面 | ${DESKTOP_FLAVOR}（UKUI X11 + labwc Wayland，lightdm autologin） |"
+            echo "| CMA | ${CMA_OVERRIDE:-$CMA} |"
+            echo "| SELinux | ${SELINUX_MODE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 下载 boot 资产
+        run: |
+          set -euo pipefail
+          mkdir -p in
+          TAG="${{ steps.cfg.outputs.tag }}"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'boot-*.tar.zst*' --dir in
+          ls -lh in/
+          TAR=$(ls in/boot-*.tar.zst | awk 'NR==1')
+          if [ -f "$TAR.sha256" ]; then ( cd in && sha256sum -c "$(basename "$TAR").sha256" ); fi
+          echo "BOOT_TAR=$TAR" >> "$GITHUB_ENV"
+
+      - name: 下载 openEuler 整机镜像
+        run: |
+          set -euo pipefail
+          BASE="https://dl-cdn.openeuler.openatom.cn/openEuler-${OE_VER}/virtual_machine_img/aarch64"
+          F="openEuler-${OE_VER}-aarch64.qcow2.xz"
+          mkdir -p in
+          echo "下载 $BASE/$F"
+          curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$BASE/$F"
+          curl -fsSL -o "in/$F.sha256sum" "$BASE/$F.sha256sum" || true
+          if [ -s "in/$F.sha256sum" ]; then
+            ( cd in && sha256sum -c "$F.sha256sum" ) || { echo "::error::校验失败"; exit 1; }
+          fi
+          ls -lh "in/$F"
+          echo "OE_XZ=in/$F" >> "$GITHUB_ENV"
+
+      - name: 拼装镜像 + 桌面集成
+        run: |
+          set -euo pipefail
+          # sudo -E：必须带 INTEGRATE/DESKTOP_FLAVOR/MPV_X11/ADMIN_USER 等一整组变量进 root 环境，
+          # 否则 integrate-desktop.sh 读不到 flavor，会静默退回默认 both
+          sudo -E bash scripts/build-image.sh "$BOOT_TAR" "$OE_XZ" "$GITHUB_WORKSPACE/out.img"
+
+      - name: 压缩与校验和
+        id: pack
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          # 真实内核版本取自 build-image.sh 落盘的 resolved conf —— 它会以 boot 资产
+          # 里的 lib/modules 为准纠正 board.conf 的模板默认值，产物名必须跟着它走
+          KVER=$(sed -n 's/^KERNEL_VER=//p' work/board.resolved.conf)
+          echo "实际内核: $KVER"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          # 镜像名不带 run number（用户要求）。同日重复构建会产出同名文件：
+          # Release 上传走 --clobber 覆盖旧版，run 编号在 Release 标题里可追溯。
+          NAME="openEuler-${OE_VER}-${BOARD}-desktop-${KVER%%-*}-${DATE}.img"
+          mv out.img "$NAME"
+          echo "大小: $(du -h "$NAME" | cut -f1)"
+          xz -T0 -6 "$NAME"
+          sha256sum "$NAME.xz" > "$NAME.xz.sha256"
+          ls -lh "$NAME.xz"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openEuler-${{ matrix.board }}-desktop
+          path: |
+            *.img.xz
+            *.sha256
+          retention-days: 14
+
+      - name: 发布 Release
+        if: ${{ success() && inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y%m%d)
+          TAG="${BOARD}-desktop-${DATE}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./*.img.xz ./*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" ./*.img.xz ./*.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "openEuler ${OE_VER} ${BOARD} Desktop ${DATE} #${GITHUB_RUN_NUMBER}" \
+              --notes "openEuler ${OE_VER} 用户态 + Armbian vendor 内核（${{ steps.pack.outputs.kver }}）+ 双桌面（UKUI X11 + labwc Wayland）
+          板卡：\`${BOARD}\`   SoC：${{ steps.cfg.outputs.soc }}   DTB：\`${{ steps.cfg.outputs.dtb }}\`
+          桌面组合：${DESKTOP_FLAVOR}（both=UKUI+labwc 都装，默认进 labwc/Wayland；x11=仅 UKUI；wayland=仅 labwc）
+          显示管理器：lightdm，预设管理员 \`${ADMIN_USER:-iot}\` 自动登录桌面
+          SELinux：${SELINUX_MODE}   CMA：${CMA_OVERRIDE:-auto}
+
+          ### 烧写
+          \`\`\`
+          xz -dc ${BOARD}-desktop-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+          \`\`\`
+          上电后显示器直接进桌面（\`${ADMIN_USER:-iot}\` 自动登录）。mpv 三后端（drm/x11egl/wayland）全开，rkmpp 硬解零拷贝。
+          首启会被要求改 \`${ADMIN_USER:-iot}\` 口令（当前 openeuler，弱口令）；root 同。根分区首启自动扩到整盘（\`firstboot-growfs.service\`）。
+          板子无 RTC/RTC 掉电重启归 1970：开机自动校时（\`boot-time-sync.service\`），排查看 \`journalctl -u boot-time-sync\` 与 \`date\`。
+          切会话：登录界面选 UKUI(X11) 或 labwc(Wayland)；both 默认 labwc。播放 \`mpv-auto <片源>\` 自动选当前会话的后端。"
+          fi
+          echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"

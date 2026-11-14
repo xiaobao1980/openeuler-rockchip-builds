@@ -1,0 +1,15 @@
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -485,6 +485,12 @@
+         if (hw_ctx && hw_ctx->av_device_ref)
+             return av_buffer_ref(hw_ctx->av_device_ref);
+     }
++
++    // Workaround: rkmpp declares RKMPP device type while drmprime VO supplies DRM
++    // Fall back to creating the decoder own device when types do not match
++    AVBufferRef *own = NULL;
++    if (av_hwdevice_ctx_create(&own, hwdec->lavc_device, NULL, NULL, 0) >= 0)
++        return own;
+ 
+     return NULL;
+ }
