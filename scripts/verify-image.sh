@@ -116,6 +116,35 @@ else
   echo "（GROWFS_FIRSTBOOT=0，跳过首启扩容校验）"
 fi
 
+# 无 RTC 开机校时：RK35xx 板掉电重启归 1970，所有 HTTPS 报 certificate is
+# not yet valid（真机实锤：2026-11-14 板端构建全挂于此）。没有它，镜像在
+# 断电重启后 dnf/git/时钟全废，用户只能串口手敲 date -s。
+if [ "${TIMESYNC_BOOT:-1}" = "1" ]; then
+  echo "-- 无 RTC 开机校时"
+  TS=$MP/usr/sbin/boot-time-sync
+  TUNIT=$MP/etc/systemd/system/boot-time-sync.service
+  TWANTS=$MP/etc/systemd/system/multi-user.target.wants/boot-time-sync.service
+  chk "/usr/sbin/boot-time-sync 存在可执行"  "[ -x '$TS' ]"
+  chk "boot-time-sync 语法正确"              "bash -n '$TS'"
+  chk "校时服务 unit 存在"                   "[ -f '$TUNIT' ]"
+  chk "校时服务开机自启（每次 boot）"        "[ -L '$TWANTS' ]"
+  chk "校时服务 Type=oneshot"                "grep -q '^Type=oneshot' '$TUNIT'"
+  chk "校时服务等网络（network-online）"     "grep -q 'network-online.target' '$TUNIT'"
+  chk "校时为每次开机（无 done marker 门控）" "! grep -q 'ConditionPathExists=!.*/.*done' '$TUNIT'"
+  chk "校时三级兜底（chronyd 路径）"         "grep -q 'chronyc waitsync' '$TS'"
+  chk "校时三级兜底（timesyncd 路径）"       "grep -q 'systemd-timesyncd' '$TS'"
+  chk "校时三级兜底（HTTP Date 路径）"       "grep -q 'HTTP Date' '$TS'"
+  chk "校时脚本恒 exit 0（不阻塞 boot）"     "grep -q '^exit 0' '$TS'"
+  if [ -x "$MP/usr/sbin/chronyd" ]; then
+    chk "chronyd 开机自启已预置" \
+      "[ -L '$MP/etc/systemd/system/multi-user.target.wants/chronyd.service' ]"
+    chk "chrony 配置含 makestep（大钟差跳变）" \
+      "grep -q '^makestep' '$MP/etc/chrony.conf' || grep -q '^makestep' '$MP/etc/chrony/chrony.conf'"
+  fi
+else
+  echo "（TIMESYNC_BOOT=0，跳过开机校时校验）"
+fi
+
 echo "-- 内核与模块"
 chk "/boot/Image 存在且 >10MB"          "[ -f '$MP/boot/Image' ] && [ \$(stat -c %s '$MP/boot/Image') -gt 10485760 ]"
 chk "/boot/dtb/rockchip/$DTB 存在"      "[ -f '$MP/boot/dtb/rockchip/$DTB' ]"

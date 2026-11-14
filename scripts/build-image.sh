@@ -16,6 +16,8 @@
 #   SSH_PUBKEY              root 及管理员账号的 SSH 公钥；传入则只允许密钥登录、关闭密码登录
 #   SKIP_DEPMOD=1  跳过 chroot depmod（调试用，产物大概率起不来）
 #   GROWFS_FIRSTBOOT=0  禁用首启自动扩容服务（默认启用；烧到大卡/eMMC 后自动吃满整盘）
+#   TIMESYNC_BOOT=0     禁用开机校时服务（默认启用；无 RTC 板掉电重启归 1970 后
+#                       所有 HTTPS 报 certificate is not yet valid，必须每次开机校时）
 #   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
 #               见 scripts/integrate-iot.sh 的选项说明
@@ -348,6 +350,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6a-2. 无 RTC 开机校时：RK35xx 板普遍无 RTC/RTC 掉电，重启归 1970 后所有
+#       HTTPS（dnf/git/curl）报 certificate is not yet valid。装一个【每次
+#       开机】跑的 oneshot 服务：chronyd -> timesyncd -> HTTP Date 三级兜底；
+#       恒 exit 0 绝不阻塞启动。rootfs 自带 chronyd 则构建期顺手 enable。
+# ---------------------------------------------------------------------------
+TIMESYNC_BOOT="${TIMESYNC_BOOT:-1}"
+if [ "$TIMESYNC_BOOT" = "1" ]; then
+  [ -f "$HERE/boot-time-sync.sh" ] || die "缺 scripts/boot-time-sync.sh"
+  mkdir -p "$R/usr/sbin" "$R/etc/systemd/system/multi-user.target.wants"
+  install -m 0755 "$HERE/boot-time-sync.sh" "$R/usr/sbin/boot-time-sync"
+  cat > "$R/etc/systemd/system/boot-time-sync.service" <<'UNIT'
+[Unit]
+Description=Sync system clock every boot (RTC-less boards reset to 1970)
+Wants=network-online.target
+After=network-online.target chronyd.service systemd-timesyncd.service
+ConditionPathExists=!/var/lib/boot-time-sync.skip
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/boot-time-sync
+TimeoutStartSec=150
+StandardOutput=journal
+StandardError=journal
+# 脚本恒 exit 0；这里再兜一层，校时异常不许把 boot 拖成 degraded
+SuccessExitStatus=0 1 2 3 4 5 6 7
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../boot-time-sync.service \
+    "$R/etc/systemd/system/multi-user.target.wants/boot-time-sync.service"
+  # rootfs 自带 chronyd：构建期 enable + 确保 makestep（钟差一年也能一步跳正）
+  if [ -x "$R/usr/sbin/chronyd" ]; then
+    ln -sf ../chronyd.service \
+      "$R/etc/systemd/system/multi-user.target.wants/chronyd.service"
+    _CC="$R/etc/chrony.conf"
+    [ -f "$_CC" ] || _CC="$R/etc/chrony/chrony.conf"
+    if [ -f "$_CC" ] && ! grep -q '^makestep' "$_CC"; then
+      echo 'makestep 1.0 3' >> "$_CC"
+    fi
+    info "chronyd 已预置开机自启（makestep 大钟差直接跳变）"
+  else
+    info "rootfs 无 chronyd：校时交给 boot-time-sync 的 timesyncd/HTTP 兜底"
+  fi
+  info "已预置 boot-time-sync：每次开机自动校时（chronyd -> timesyncd -> HTTP Date）"
+else
+  info "TIMESYNC_BOOT=0：跳过开机校时服务"
+fi
+
+# ---------------------------------------------------------------------------
 # 6b. 安全加固：非 root 管理员 + 可选 SSH 公钥
 #     默认 root/openeuler 密码直登只是 bring-up 期方便；长期应登管理员账号、用密钥。
 # ---------------------------------------------------------------------------
@@ -595,6 +648,7 @@ RESOLVED="$WORK/board.resolved.conf"
   echo "CMA=$CMA"
   echo "SELINUX=$SELINUX"
   echo "INTEGRATE=$INTEGRATE"
+  echo "TIMESYNC_BOOT=$TIMESYNC_BOOT"
   echo "IOT_STACK=${IOT_STACK:-}"
   echo "IOT_MQTT_PORT=${IOT_MQTT_PORT:-1883}"
   echo "IOT_WS_PORT=${IOT_WS_PORT:-8083}"
@@ -604,7 +658,8 @@ RESOLVED="$WORK/board.resolved.conf"
 # 两个开关显式带入 verify：新增的「首启扩容」与「默认扩展节点」断言靠它们分流，
 # 不能只靠环境继承（本地直接跑 / sudo 不带 -E 时会静默跳过，失去防回归意义）。
 ADMIN_USER="$ADMIN_USER" ADMIN_GROUPS="$ADMIN_GROUPS" BOARD_CONF="$RESOLVED" \
-  GROWFS_FIRSTBOOT="$GROWFS_FIRSTBOOT" IOT_NODERED_NODES="${IOT_NODERED_NODES:-}" \
+  GROWFS_FIRSTBOOT="$GROWFS_FIRSTBOOT" TIMESYNC_BOOT="$TIMESYNC_BOOT" \
+  IOT_NODERED_NODES="${IOT_NODERED_NODES:-}" \
   bash "$HERE/verify-image.sh" "$OUT_IMG"
 
 # 被 sudo 调用时把产物交还给调用者。否则 out.img 属 root:root，后续非 root 的

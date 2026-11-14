@@ -168,6 +168,9 @@ jobs:
       ADMIN_PW: ${{ inputs.admin_pw }}
       ADMIN_GROUPS: ${{ inputs.user_groups }}
       SSH_PUBKEY: ${{ inputs.ssh_pubkey }}
+      # 无 RTC 板掉电重启归 1970 → HTTPS 全挂（certificate is not yet valid）。
+      # 每次开机自动校时（chronyd -> timesyncd -> HTTP Date 兜底），见 build-image.sh §6a-2
+      TIMESYNC_BOOT: "1"
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -321,6 +324,7 @@ jobs:
           xz -dc ${BOARD}-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
           \`\`\`
           启动后串口 1500000 8N1 应看到 U-Boot → extlinux → systemd。
-          默认管理员 \`iot\`（口令 openeuler，已设首次登录强制改口令）；root 口令同默认，建议尽快改。首次登录会被要求立即改 \`iot\` 口令（Current password 填 openeuler）；新密码需 ≥8 位且含大小写/数字/符号中至少 3 类，弱口令会被拒绝（passwd 报 \`Authentication token manipulation error\`，以其上方 \`BAD PASSWORD: ...\` 为准）。改完即可正常使用。根分区首启会自动扩到整盘（\`firstboot-growfs.service\`，保留 PARTUUID、失败不阻塞启动），无需手动 \`growpart\`；排查看 \`journalctl -u firstboot-growfs\` 与 \`df -h /\`"
+          默认管理员 \`iot\`（口令 openeuler，已设首次登录强制改口令）；root 口令同默认，建议尽快改。首次登录会被要求立即改 \`iot\` 口令（Current password 填 openeuler）；新密码需 ≥8 位且含大小写/数字/符号中至少 3 类，弱口令会被拒绝（passwd 报 \`Authentication token manipulation error\`，以其上方 \`BAD PASSWORD: ...\` 为准）。改完即可正常使用。根分区首启会自动扩到整盘（\`firstboot-growfs.service\`，保留 PARTUUID、失败不阻塞启动），无需手动 \`growpart\`；排查看 \`journalctl -u firstboot-growfs\` 与 \`df -h /\`
+          板子无 RTC/RTC 掉电时重启归 1970：开机自动校时（\`boot-time-sync.service\`，chronyd → timesyncd → HTTP Date 兜底，每次开机运行、失败不阻塞启动），排查看 \`journalctl -u boot-time-sync\` 与 \`date\`"
           fi
           echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
