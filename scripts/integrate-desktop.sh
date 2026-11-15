@@ -220,22 +220,18 @@ if want wayland || want both; then
     || die "seatd 编译失败"
 
   # 2.5 wlroots（wrap 拉子项目；新版 GCC 对 etnaviv 的 -Werror=strict-aliasing 过敏 → 关 werror）
-  WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.20*')"
-  [ -z "$WLR_TAG" ] && WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.19*')"
-  [ -z "$WLR_TAG" ] && WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.18*')"
-  [ -z "$WLR_TAG" ] && WLR_TAG="$(latest_tag "$SRC/wayland-src/wlroots")"
+  # 钉死 0.19.0：labwc 0.9.0 硬性依赖 wlroots-0.19；且 openEuler 24.03 源里 libinput 仅 1.24.0，
+  # 新版 labwc(>=0.20) 要求 libinput>=1.26 无法满足。自动选 latest 会因 labwc 版本号从 0.9.x
+  # 直接跳到 0.20.x 而踩坑，故此处显式钉版本，不再用 tag_ge/latest_tag 猜最新。
+  WLR_TAG="0.19.0"
   ( cd "$SRC/wayland-src/wlroots" && git checkout "$WLR_TAG" 2>/dev/null
     cr "cd /opt/rk-src/wayland-src/wlroots && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=default -Dlibdrm:werror=false -Dlibliftoff:werror=false -Dexamples=false -Dxwayland=enabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "wlroots 编译失败($WLR_TAG)"
   info "wlroots=$(cr 'pkg-config --modversion wlroots')"
 
-  # 2.6 labwc（与 wlroots 大版本配对）
-  case "$WLR_TAG" in
-    0.20*|0.19*) LAB_TAG="$(tag_ge "$SRC/wayland-src/labwc" '0.9*')" ;;
-    0.18*) LAB_TAG="$(tag_ge "$SRC/wayland-src/labwc" '0.8*')" ;;
-    *)     LAB_TAG="$(latest_tag "$SRC/wayland-src/labwc")" ;;
-  esac
-  [ -z "$LAB_TAG" ] && LAB_TAG="$(latest_tag "$SRC/wayland-src/labwc")"
+  # 2.6 labwc —— 钉死 0.9.0（与 wlroots 0.19 配对；要求 libinput>=1.14，openEuler 1.24.0 满足）。
+  # 注意：labwc 0.9.8 起已要求 wlroots-0.20；latest 现是 0.20.3（要求 libinput>=1.26），均不能用于本镜像。
+  LAB_TAG="0.9.0"
   ( cd "$SRC/wayland-src/labwc" && git checkout "$LAB_TAG" 2>/dev/null
     cr "cd /opt/rk-src/wayland-src/labwc && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "labwc 编译失败($LAB_TAG)"
