@@ -86,11 +86,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# chroot 内执行编译/安装命令
+# chroot 内执行编译/安装命令。
+# PKG_CONFIG_PATH 里 /usr/local/share/pkgconfig 必须有：wayland-protocols 的 .pc 装在这里
+# （datadir/pkgconfig），漏掉会搜到系统自带的 1.33，而 labwc 0.9.0 要求 >=1.39 且无 wrap 兜底。
 cr() {
   chroot "$R" /usr/bin/env -i \
     PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    PKG_CONFIG_PATH="/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig" \
+    PKG_CONFIG_PATH="/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/lib64/pkgconfig:/usr/share/pkgconfig" \
     HOME=/root LANG=C.UTF-8 \
     bash -c "$*"
 }
@@ -154,8 +156,19 @@ git_clone_retry() {
   done
   die "所有源/重试均失败: $*"
 }
-latest_tag(){ git -C "$1" tag -l | sort -V | tail -1; }
-tag_ge(){ git -C "$1" tag -l "$2" | sort -V | tail -1; }
+# 钉死的 Wayland 栈版本：labwc 0.9.0 只要 libinput>=1.14（openEuler 24.03 自带 1.24.0），
+# 且硬性依赖 wlroots-0.19；较新 labwc(>=0.9.8 / 0.20.x) 要 wlroots-0.20 + libinput>=1.26，
+# 与本镜像源不兼容。版本号跳跃（0.9.x→0.20.x）+ 自动选 latest 会选错，故显式钉死。
+WLR_TAG="0.19.0"
+LAB_TAG="0.9.0"
+
+# 校验源码确实落在指定标签，防止浅克隆未带标签时静默编译 master（曾连错 3 轮 CI 才定位）。
+assert_src_tag() {
+  local d="$1" want="$2" got
+  got="$(git -C "$d" describe --tags --exact-match 2>/dev/null || true)"
+  [ "$got" = "$want" ] || die "源码版本校验失败：$d 期望 $want，实际 ${got:-无标签/HEAD}（clone 未落在钉死标签，会误编 master）"
+  log "源码版本校验 OK: $(basename "$d")=$got"
+}
 
 # ---- Wayland 栈源码（both / wayland） ----
 if want wayland || want both; then
@@ -166,9 +179,12 @@ if want wayland || want both; then
   git_clone_retry ""         "$SRC/wayland-src/libdisplay-info" \
     https://gitlab.freedesktop.org/emersion/libdisplay-info.git https://github.com/emersion/libdisplay-info.git
   git_clone_retry ""         "$SRC/wayland-src/seatd" https://github.com/kennylevinsen/seatd.git
-  git_clone_retry ""         "$SRC/wayland-src/wlroots" \
+  # 关键：--depth=1 浅克隆不带任何标签，事后 git checkout <tag> 必然失败且被静默吞掉，
+  # 会一直编译仓库 master。必须用 -b <tag> 让 clone 直接落在钉死版本（第一个参数即 -b 值）。
+  # 注意 github 镜像 swaywm/wlroots 标签只到 0.14.1，故 wlroots 首选 gitlab（有 0.19.0）。
+  git_clone_retry "$WLR_TAG" "$SRC/wayland-src/wlroots" \
     https://gitlab.freedesktop.org/wlroots/wlroots.git https://github.com/swaywm/wlroots.git
-  git_clone_retry ""         "$SRC/wayland-src/labwc" https://github.com/labwc/labwc.git
+  git_clone_retry "$LAB_TAG" "$SRC/wayland-src/labwc" https://github.com/labwc/labwc.git
   # foot 终端（尽力而为）
   git_clone_retry ""         "$SRC/wayland-src/tllist" https://github.com/aitzkora/tllist.git https://codeberg.org/dnkl/tllist.git || true
   git_clone_retry ""         "$SRC/wayland-src/fcft" https://github.com/aitzkora/fcft.git https://codeberg.org/dnkl/fcft.git || true
@@ -190,61 +206,68 @@ git_clone_retry "$MPV_TAG" "$SRC/mpv" https://github.com/mpv-player/mpv.git
 if want wayland || want both; then
   log "== 编译 Wayland 栈（wayland-protocols/libxkbcommon/libdisplay-info/seatd/wlroots/labwc）=="
   # 开发库已由上方 dnf_install_loose 逐个安装（含 libinput-devel 等必需项），此处不再重复 dnf
+  # 编译前强制校验钉死版本：一旦 clone 落在错版本（浅克隆曾静默编 master）立即中止，
+  # 不再让 meson 走 wrap 拉到不兼容的 wlroots/libinput 版本，浪费十几分钟才发现。
+  assert_src_tag "$SRC/wayland-src/wlroots" "$WLR_TAG"
+  assert_src_tag "$SRC/wayland-src/labwc"  "$LAB_TAG"
 
   # 注册 /usr/local/lib64 到动态链接器（libwlroots-0.19.so 等装这里）
   if ! cr "grep -q '/usr/local/lib64' /etc/ld.so.conf.d/*.conf 2>/dev/null"; then
     cr "echo '/usr/local/lib64' > /etc/ld.so.conf.d/usrlocal-lib64.conf && ldconfig"
   fi
 
-  # 2.1 wayland-protocols
-  ( cd "$SRC/wayland-src/wayland-protocols" && git checkout "$(latest_tag "$SRC/wayland-src/wayland-protocols")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/wayland-protocols && rm -rf build && meson setup build --prefix=/usr/local -Dtests=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  # 2.1~2.4 / 2.7 说明：这些库用 clone 下来的默认分支即可（无版本配对约束），
+  # 不再写 git checkout "$(latest_tag ...)" —— --depth=1 浅克隆不带标签，那句必然
+  # 失败且被 2>/dev/null 吞掉，是误导性的死代码。真正需要钉版本的 wlroots/labwc
+  # 已由 clone 阶段 -b <tag> 落地并断言。
+  # 2.1 wayland-protocols（1.50，装到 /usr/local/share/pkgconfig，labwc 0.9.0 要求 >=1.39）
+  ( cr "cd /opt/rk-src/wayland-src/wayland-protocols && rm -rf build && meson setup build --prefix=/usr/local -Dtests=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "wayland-protocols 编译失败"
-  info "wayland-protocols=$(cr 'pkg-config --modversion wayland-protocols')"
+  WP_VER="$(cr 'pkg-config --modversion wayland-protocols' 2>/dev/null | tail -1)"
+  info "wayland-protocols=$WP_VER"
+  # labwc 0.9.0 要求 >=1.39，且 0.9.0 无 wayland-protocols.wrap 兜底。若这里仍是系统
+  # 自带的 1.33，说明 /usr/local/share/pkgconfig 未生效，立即中止（别拖到 labwc 才报错）。
+  case "$WP_VER" in
+    1.[4-9][0-9]*|[2-9]*) : ;;                 # >=1.40 放行
+    1.39*) : ;;                                # 1.39 恰好满足
+    *) die "wayland-protocols 版本过低：$WP_VER（labwc 0.9.0 要求 >=1.39），检查 /usr/local/share/pkgconfig 是否生效" ;;
+  esac
 
   # 2.2 libxkbcommon（X11 + Wayland 都开：/usr/local/lib 优先级高于 /usr/lib64，
   #     本地库会覆盖系统库，故须同时支持 X11（UKUI 走 X11 需要 libxkbcommon-x11）与 Wayland（labwc））
-  ( cd "$SRC/wayland-src/libxkbcommon" && git checkout "$(latest_tag "$SRC/wayland-src/libxkbcommon")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/libxkbcommon && rm -rf build && meson setup build --prefix=/usr/local -Denable-x11=true -Denable-wayland=true -Denable-docs=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  ( cr "cd /opt/rk-src/wayland-src/libxkbcommon && rm -rf build && meson setup build --prefix=/usr/local -Denable-x11=true -Denable-wayland=true -Denable-docs=false --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "libxkbcommon 编译失败"
   info "libxkbcommon=$(cr 'pkg-config --modversion xkbcommon')"
 
   # 2.3 libdisplay-info
-  ( cd "$SRC/wayland-src/libdisplay-info" && git checkout "$(latest_tag "$SRC/wayland-src/libdisplay-info")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  ( cr "cd /opt/rk-src/wayland-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "libdisplay-info 编译失败"
 
   # 2.4 seatd (libseat)
-  ( cd "$SRC/wayland-src/seatd" && git checkout "$(latest_tag "$SRC/wayland-src/seatd")" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/seatd && rm -rf build && meson setup build --prefix=/usr/local -Dman-pages=disabled -Dexamples=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  ( cr "cd /opt/rk-src/wayland-src/seatd && rm -rf build && meson setup build --prefix=/usr/local -Dman-pages=disabled -Dexamples=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "seatd 编译失败"
 
   # 2.5 wlroots（wrap 拉子项目；新版 GCC 对 etnaviv 的 -Werror=strict-aliasing 过敏 → 关 werror）
-  # 钉死 0.19.0：labwc 0.9.0 硬性依赖 wlroots-0.19；且 openEuler 24.03 源里 libinput 仅 1.24.0，
-  # 新版 labwc(>=0.20) 要求 libinput>=1.26 无法满足。自动选 latest 会因 labwc 版本号从 0.9.x
-  # 直接跳到 0.20.x 而踩坑，故此处显式钉版本，不再用 tag_ge/latest_tag 猜最新。
-  WLR_TAG="0.19.0"
-  ( cd "$SRC/wayland-src/wlroots" && git checkout "$WLR_TAG" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/wlroots && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=default -Dlibdrm:werror=false -Dlibliftoff:werror=false -Dexamples=false -Dxwayland=enabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  # 版本由 clone 阶段 -b "$WLR_TAG" 落在 0.19.0，并已在编译段开头 assert_src_tag 校验。
+  # .pc 名是 wlroots-0.19（versioned_name），不是 wlroots，故下面查询须带版本后缀。
+  ( cr "cd /opt/rk-src/wayland-src/wlroots && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=default -Dlibdrm:werror=false -Dlibliftoff:werror=false -Dexamples=false -Dxwayland=enabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "wlroots 编译失败($WLR_TAG)"
-  info "wlroots=$(cr 'pkg-config --modversion wlroots')"
+  info "wlroots-0.19=$(cr 'pkg-config --modversion wlroots-0.19')"
 
-  # 2.6 labwc —— 钉死 0.9.0（与 wlroots 0.19 配对；要求 libinput>=1.14，openEuler 1.24.0 满足）。
-  # 注意：labwc 0.9.8 起已要求 wlroots-0.20；latest 现是 0.20.3（要求 libinput>=1.26），均不能用于本镜像。
-  LAB_TAG="0.9.0"
-  ( cd "$SRC/wayland-src/labwc" && git checkout "$LAB_TAG" 2>/dev/null
-    cr "cd /opt/rk-src/wayland-src/labwc && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  # 2.6 labwc —— 版本由 clone 阶段 -b "$LAB_TAG" 落在 0.9.0，开头已 assert_src_tag 校验。
+  # -Dicon=disabled：0.9.0 的 icon 选项是 required，开启会经 libsfdo.wrap 去 clone 子项目；
+  #   关掉后 libsfdo 依赖变可选，避免联网拉源码引入不确定性（极简合成器也不需要窗口图标）。
+  # --wrap-mode=nofallback：wlroots 已装到 /usr/local，强制走系统依赖，杜绝再 clone
+  #   wlroots.wrap 拉到 0.20 分支这类版本错配（曾导致 libinput>=1.26 报错）。
+  ( cr "cd /opt/rk-src/wayland-src/labwc && rm -rf build && meson setup build --prefix=/usr/local --wrap-mode=nofallback -Dicon=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
     || die "labwc 编译失败($LAB_TAG)"
   info "labwc=$(cr '/usr/local/bin/labwc --version 2>/dev/null | head -1')"
 
   # 2.7 foot 终端（尽力而为）
   if [ -d "$SRC/wayland-src/foot" ]; then
-    ( cd "$SRC/wayland-src/tllist" && git checkout "$(latest_tag "$SRC/wayland-src/tllist")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/tllist && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "tllist 失败"
-    ( cd "$SRC/wayland-src/fcft" && git checkout "$(latest_tag "$SRC/wayland-src/fcft")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/fcft && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "fcft 失败"
-    ( cd "$SRC/wayland-src/foot" && git checkout "$(latest_tag "$SRC/wayland-src/foot")" 2>/dev/null
-      cr "cd /opt/rk-src/wayland-src/foot && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null && info "foot 已装" || warn "foot 未装成（非致命，xterm via Xwayland 兜底）"
+    ( cr "cd /opt/rk-src/wayland-src/tllist && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "tllist 失败"
+    ( cr "cd /opt/rk-src/wayland-src/fcft && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null || warn "fcft 失败"
+    ( cr "cd /opt/rk-src/wayland-src/foot && rm -rf build && meson setup build --prefix=/usr/local -Ddocs=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) 2>/dev/null && info "foot 已装" || warn "foot 未装成（非致命，xterm via Xwayland 兜底）"
   fi
 
   # 2.8 XKB 软链修复（防 labwc 段错误 SIGSEGV/exit 139）：自编译 libxkbcommon 默认找
