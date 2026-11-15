@@ -42,7 +42,11 @@ fi
 # --- 1. chronyd：标准路径 ----------------------------------------------------
 if command -v chronyc >/dev/null 2>&1; then
   systemctl enable --now chronyd >/dev/null 2>&1 || true
-  if chronyc waitsync 15 0.1 >/dev/null 2>&1; then
+  # chronyd 因故没起来（被 mask / 启动失败 / 无 NTP 源）时，chronyc waitsync
+  # 会挂起不返回（板端实测）。不套 timeout 的话脚本会卡死在这一步，直到
+  # service 的 TimeoutStartSec(150s) 被 systemd 杀掉——HTTP Date 兜底永远
+  # 没机会执行，时间照样没校准。故必须限时限步，快速失败后继续往下走。
+  if timeout 20 chronyc waitsync 15 0.1 >/dev/null 2>&1; then
     chronyc makestep >/dev/null 2>&1 || true
   fi
   if sane; then
