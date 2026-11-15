@@ -135,6 +135,7 @@ dnf_install_loose \
   libinput-devel pixman-devel libxml2-devel cairo-devel pango-devel glib2-devel \
   freetype-devel fontconfig-devel mesa-libGL-devel mesa-libEGL-devel mesa-libgbm-devel \
   libass-devel uchardet-devel lua-devel x264-devel x265-devel libdav1d-devel gnutls-devel \
+  alsa-lib-devel \
   systemd-devel hwdata \
   xorg-x11-server-Xwayland xorg-x11-server-Xwayland-devel xterm
 
