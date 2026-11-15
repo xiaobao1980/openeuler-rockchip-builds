@@ -229,7 +229,10 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
       chk "z2m 开机自启"                      "[ -L '$MP/etc/systemd/system/multi-user.target.wants/zigbee2mqtt.service' ]"
       ;;
   esac
-  chk "/etc/iot-stack.env 已写入"           "[ -f '$MP/etc/iot-stack.env' ]"
+  # iot-stack.env 只有 iot 集成才写（INTEGRATE 可为 desktop/iot,desktop 组合，不能无条件校验）
+  case ",${INTEGRATE:-none}," in
+    *",iot,"*) chk "/etc/iot-stack.env 已写入" "[ -f '$MP/etc/iot-stack.env' ]" ;;
+  esac
   # dnf clean all 会重建目录骨架，判空目录会误报；只关心有没有真包留在里面
   chk "无 dnf 包缓存残留"                   "[ -z \"\$(find '$MP/var/cache/dnf' -name '*.rpm' -print -quit 2>/dev/null)\" ]"
 fi
