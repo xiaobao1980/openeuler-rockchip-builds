@@ -189,9 +189,7 @@ git_clone_retry "$MPV_TAG" "$SRC/mpv" https://github.com/mpv-player/mpv.git
 # ---------------------------------------------------------------------------
 if want wayland || want both; then
   log "== 编译 Wayland 栈（wayland-protocols/libxkbcommon/libdisplay-info/seatd/wlroots/labwc）=="
-  cr "$DNFC install libX11-devel libXext-devel libXrandr-devel libXv-devel libxcb-devel \
-      wayland-devel wayland-protocols-devel libxkbcommon-devel libinput-devel libxkbcommon \
-      mesa-libEGL-devel mesa-libGL-devel mesa-libgbm-devel libudev-devel systemd-devel" >/dev/null 2>&1 || true
+  # 开发库已由上方 dnf_install_loose 逐个安装（含 libinput-devel 等必需项），此处不再重复 dnf
 
   # 注册 /usr/local/lib64 到动态链接器（libwlroots-0.19.so 等装这里）
   if ! cr "grep -q '/usr/local/lib64' /etc/ld.so.conf.d/*.conf 2>/dev/null"; then
@@ -222,7 +220,8 @@ if want wayland || want both; then
     || die "seatd 编译失败"
 
   # 2.5 wlroots（wrap 拉子项目；新版 GCC 对 etnaviv 的 -Werror=strict-aliasing 过敏 → 关 werror）
-  WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.19*')"
+  WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.20*')"
+  [ -z "$WLR_TAG" ] && WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.19*')"
   [ -z "$WLR_TAG" ] && WLR_TAG="$(tag_ge "$SRC/wayland-src/wlroots" '0.18*')"
   [ -z "$WLR_TAG" ] && WLR_TAG="$(latest_tag "$SRC/wayland-src/wlroots")"
   ( cd "$SRC/wayland-src/wlroots" && git checkout "$WLR_TAG" 2>/dev/null
@@ -232,7 +231,7 @@ if want wayland || want both; then
 
   # 2.6 labwc（与 wlroots 大版本配对）
   case "$WLR_TAG" in
-    0.19*) LAB_TAG="$(tag_ge "$SRC/wayland-src/labwc" '0.9*')" ;;
+    0.20*|0.19*) LAB_TAG="$(tag_ge "$SRC/wayland-src/labwc" '0.9*')" ;;
     0.18*) LAB_TAG="$(tag_ge "$SRC/wayland-src/labwc" '0.8*')" ;;
     *)     LAB_TAG="$(latest_tag "$SRC/wayland-src/labwc")" ;;
   esac
