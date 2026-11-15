@@ -514,8 +514,20 @@ mount_chroot() {
   mountpoint -q "$R/sys"     || mount -t sysfs sys "$R/sys"
 }
 umount_chroot() {
-  umount "$R/dev/pts" 2>/dev/null; umount "$R/dev" 2>/dev/null
-  umount "$R/proc" 2>/dev/null;    umount "$R/sys" 2>/dev/null
+  # dnf 脚本件/安装收尾可能 daemon 化遗留进程，占住 /dev /proc 使 umount 报 EBUSY
+  # （util-linux umount 退出码 32），在 set -e 下会直接终止整个构建。
+  # 先杀掉所有以 $R 为根的进程，再卸载；仍失败用 -l 懒卸载兜底（从此命名空间摘除）。
+  local p
+  for p in /proc/[0-9]*; do
+    if [ "$(readlink "$p/root" 2>/dev/null)" = "$R" ]; then
+      kill -9 "${p#/proc/}" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+  umount "$R/dev/pts" 2>/dev/null || umount -l "$R/dev/pts" 2>/dev/null || true
+  umount "$R/dev"    2>/dev/null || umount -l "$R/dev"    2>/dev/null || true
+  umount "$R/proc"   2>/dev/null || umount -l "$R/proc"   2>/dev/null || true
+  umount "$R/sys"    2>/dev/null || umount -l "$R/sys"    2>/dev/null || true
 }
 
 # INTEGRATE 支持逗号分隔组合：none | iot | desktop（例：iot,desktop 同时烘焙）
