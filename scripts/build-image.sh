@@ -600,6 +600,37 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8a. 中国区默认配置：时区 + chrony（三级校时的首选层）
+#     2026-11-17 .101 实测：基础镜像出厂 UTC、无 chrony，校时只靠 HTTP 兜底
+# ---------------------------------------------------------------------------
+TZ_SET="${TIMEZONE:-Asia/Shanghai}"
+if [ -f "$R/usr/share/zoneinfo/$TZ_SET" ]; then
+  ln -sf "../usr/share/zoneinfo/$TZ_SET" "$R/etc/localtime"
+  printf '%s\n' "$TZ_SET" > "$R/etc/timezone"
+  info "时区已设为 $TZ_SET"
+else
+  info "缺 /usr/share/zoneinfo/$TZ_SET，时区保持 UTC"
+fi
+if [ ! -x "$R/usr/sbin/chronyd" ] && [ "$TIMESYNC_BOOT" = "1" ]; then
+  log "chroot 内补装 chrony（校时首选层）"
+  mount_chroot
+  if chroot "$R" /usr/bin/dnf install -y chrony >/dev/null 2>&1 \
+     && [ -x "$R/usr/sbin/chronyd" ]; then
+    ln -sf ../chronyd.service \
+      "$R/etc/systemd/system/multi-user.target.wants/chronyd.service"
+    _CC="$R/etc/chrony.conf"
+    [ -f "$_CC" ] || _CC="$R/etc/chrony/chrony.conf"
+    if [ -f "$_CC" ] && ! grep -q '^makestep' "$_CC"; then
+      echo 'makestep 1.0 3' >> "$_CC"
+    fi
+    info "chrony 已补装并预置开机自启（makestep 大钟差跳变）"
+  else
+    info "chrony 补装失败：校时退回 timesyncd/HTTP 兜底（不影响开机）"
+  fi
+  umount_chroot
+fi
+
+# ---------------------------------------------------------------------------
 # 9. 定尺寸：分区 = 内容 + slack，mkfs 按分区大小 → 首启无需 resize2fs
 # ---------------------------------------------------------------------------
 log "计算分区大小"

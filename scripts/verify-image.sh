@@ -94,6 +94,12 @@ fi
 chk "/usr/sbin/depmod 存在"             "[ -x '$MP/usr/sbin/depmod' ]"
 chk "/usr/sbin/sshd 存在"               "[ -x '$MP/usr/sbin/sshd' ]"
 
+# 时区（2026-11-17 .101 实测：出厂 UTC 导致 journal/日志时间错 8 小时）
+chk "时区 = ${TIMEZONE:-Asia/Shanghai} (/etc/localtime)" \
+  "[ \"\$(readlink '$MP/etc/localtime' 2>/dev/null)\" = '../usr/share/zoneinfo/${TIMEZONE:-Asia/Shanghai}' ]"
+chk "时区 = ${TIMEZONE:-Asia/Shanghai} (/etc/timezone)" \
+  "[ \"\$(cat '$MP/etc/timezone' 2>/dev/null)\" = '${TIMEZONE:-Asia/Shanghai}' ]"
+
 # 首启自动扩容：镜像按内容定尺寸（约 3G），不装这个服务烧到大卡就是整盘浪费。
 # 真机教训：根 100% 满时连 npm 都装不了，而板上没有 growpart/parted 可救。
 if [ "${GROWFS_FIRSTBOOT:-1}" = "1" ]; then
