@@ -107,11 +107,14 @@ cr "dnf -y --setopt=install_weak_deps=False --setopt=timeout=30 --setopt=retries
 dnf_install_loose \
   expat-devel zlib-devel libdrm-devel \
   wayland-devel wayland-protocols-devel \
-  libx11-devel libxcb-devel libxext-devel libxfixes-devel \
-  libxxf86vm-devel libxshmfence-devel
+  libX11-devel libxcb-devel libXext-devel libXfixes-devel \
+  libXxf86vm-devel libxshmfence-devel
 
 _LDRM=$(cr 'pkg-config --modversion libdrm' 2>/dev/null | tail -1 || echo '?')
 info "libdrm(系统): $_LDRM（Mesa 24.0.3 需 >=2.4.119；不足时 meson 会给出明确报错）"
+# X11 头是 glx=dri + platforms=x11 的硬依赖，缺失时 meson 报得含糊，这里提前拦下
+cr 'pkg-config --exists x11 && pkg-config --exists xcb && pkg-config --exists xcb-dri3' \
+  || die "X11/XCB 开发头缺失（libX11-devel/libxcb-devel 未装上），meson 无法配置 glx=dri"
 
 # ---------------------------------------------------------------------------
 # 2. 源码（宿主机 clone，网络稳；-b 直接落地钉死标签，杜绝误编 master）
@@ -154,7 +157,7 @@ log "== 编译 Mesa（panfrost 用户态 + GBM/EGL 后端）=="
     -Dglx=dri -Dplatforms=x11,wayland \
     -Degl=enabled -Dgbm=enabled \
     -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
-    -Dglvnd=disabled \
+    -Dglvnd=false \
     -Dlibunwind=disabled -Dlmsensors=disabled -Dvalgrind=disabled \
     --buildtype=release -Doptimization=2 \
     && ninja -C build install && ldconfig" ) \
