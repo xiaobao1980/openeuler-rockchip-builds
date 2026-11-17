@@ -634,6 +634,54 @@ if [ ! -x "$R/usr/sbin/chronyd" ] && [ "$TIMESYNC_BOOT" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 8b. 板级音频路由修复（h96-m9s HT5010 静音，2026-11-17 .101 真机复现并实测修复）
+#     根因（同 Armbian 侧 2026-08-26 定位）：HT5010 的 I2S 数据脚只焊在 SAI1
+#     SDO2（pinctrl sai1m0_sdo2），而 SAI 复位默认把播放 PATH0 路由到 SDO0
+#     （该板 SDO0 引脚未引出）→ 3.5mm 无声。
+#     修复：开机把 'Transmit SDO2 Source Select' 设回 PATH0(0)；并保证
+#     'Transmit SDOx Select'（TX lane 数）= Auto(0)——非 Auto 会算出 bclk=0
+#     导致 hw_params -EINVAL（见 Armbian audio/h96-m9-audio-fix.sh 头注）。
+#     控件前缀随驱动而异 → 按后缀匹配；卡/控件缺失一律静默跳过，其它板零影响。
+# ---------------------------------------------------------------------------
+if [ "${AUDIO_ROUTE_FIX:-1}" = "1" ]; then
+  install -m 0755 /dev/stdin "$R/usr/sbin/alsa-route-fix" <<'ROUTE'
+#!/bin/sh
+# 板级 SAI 输出路由修复：PATH0 -> SDO2（HT5010 实焊位置）。无匹配控件即退出。
+set -u
+CARD=$(aplay -l 2>/dev/null | awk '/dummy_codec/ {print $2}' | tr -d ':' | head -n1)
+[ -z "$CARD" ] && exit 0
+set_ctl() {
+  N=$(amixer -c "$CARD" controls 2>/dev/null \
+      | sed -n "s/.*name='\([^']*$1\)'.*/\1/p" | head -n1)
+  [ -n "$N" ] && amixer -c "$CARD" cset "name=$N" "$2" >/dev/null 2>&1
+}
+set_ctl 'Transmit SDO2 Source Select' 0
+set_ctl 'Transmit SDOx Select' 0
+exit 0
+ROUTE
+  cat > "$R/etc/systemd/system/alsa-route-fix.service" <<'UNIT'
+[Unit]
+Description=Board audio output route fix (HT5010 SAI1 SDO2)
+After=sound.target
+Wants=sound.target
+ConditionPathExists=/usr/sbin/alsa-route-fix
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/alsa-route-fix
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../alsa-route-fix.service \
+    "$R/etc/systemd/system/multi-user.target.wants/alsa-route-fix.service"
+  info "已预置 alsa-route-fix：开机把 SAI1 PATH0 路由到 SDO2（HT5010 出声）"
+else
+  info "AUDIO_ROUTE_FIX=0：跳过板级音频路由服务"
+fi
+
+# ---------------------------------------------------------------------------
 # 9. 定尺寸：分区 = 内容 + slack，mkfs 按分区大小 → 首启无需 resize2fs
 # ---------------------------------------------------------------------------
 log "计算分区大小"

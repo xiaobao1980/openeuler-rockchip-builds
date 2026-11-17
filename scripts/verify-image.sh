@@ -151,6 +151,16 @@ else
   echo "（TIMESYNC_BOOT=0，跳过开机校时校验）"
 fi
 
+# 板级音频路由修复（h96-m9s HT5010 焊在 SAI1 SDO2，复位默认 PATH0→SDO0 静音）
+if [ "${AUDIO_ROUTE_FIX:-1}" = "1" ]; then
+  echo "-- 板级音频路由修复"
+  chk "/usr/sbin/alsa-route-fix 存在可执行" "[ -x '$MP/usr/sbin/alsa-route-fix' ]"
+  chk "alsa-route-fix 语法正确"             "bash -n '$MP/usr/sbin/alsa-route-fix'"
+  chk "alsa-route-fix 含 SDO2 路由修复"     "grep -q \"Transmit SDO2 Source Select\" '$MP/usr/sbin/alsa-route-fix'"
+  chk "alsa-route-fix 开机自启"             "[ -L '$MP/etc/systemd/system/multi-user.target.wants/alsa-route-fix.service' ]"
+  chk "alsa-route-fix 等 sound.target"      "grep -q 'sound.target' '$MP/etc/systemd/system/alsa-route-fix.service'"
+fi
+
 echo "-- 内核与模块"
 chk "/boot/Image 存在且 >10MB"          "[ -f '$MP/boot/Image' ] && [ \$(stat -c %s '$MP/boot/Image') -gt 10485760 ]"
 chk "/boot/dtb/rockchip/$DTB 存在"      "[ -f '$MP/boot/dtb/rockchip/$DTB' ]"
