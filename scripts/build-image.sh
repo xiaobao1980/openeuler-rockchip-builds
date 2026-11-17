@@ -46,7 +46,10 @@ WORK="${WORK:-$HERE/../work}"
 ROOT_PW="${ROOT_PW:-openeuler}"
 ADMIN_USER="${ADMIN_USER:-}"
 ADMIN_PW="${ADMIN_PW:-$ROOT_PW}"
-ADMIN_GROUPS="${ADMIN_GROUPS:-wheel}"
+# 管理员附加组：默认补齐设备访问组——audio（声卡节点 root:audio 660，.101 实测
+# 不在组里 aplay 报 no soundcards found）、video/render（DRM/GPU 节点，SSH 会话
+# 无 logind uaccess 便利时靠它）、input（HID 外设）
+ADMIN_GROUPS="${ADMIN_GROUPS:-wheel,audio,video,render,input}"
 SSH_PUBKEY="${SSH_PUBKEY:-}"
 
 # --- CI 覆盖：workflow 的 inputs 落到 board.conf 推导出来的默认值上 -----------
