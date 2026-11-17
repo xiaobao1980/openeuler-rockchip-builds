@@ -237,6 +237,21 @@ if [ "${INTEGRATE:-none}" != "none" ]; then
   chk "无 dnf 包缓存残留"                   "[ -z \"\$(find '$MP/var/cache/dnf' -name '*.rpm' -print -quit 2>/dev/null)\" ]"
 fi
 
+# --- GPU 用户态（Mesa panfrost）—— 仅 INTEGRATE 含 mesa 时检查 -------------
+# 防回归：openEuler 仓库 mesa 不带 panfrost_dri.so（.102 实测），镜像必须自编烘焙；
+# 任何一环（编译失败被忽略 / 环境变量没预置）都会让 GL 静默掉回软渲染，必须静态拦下。
+case ",${INTEGRATE:-none}," in
+  *",mesa,"*)
+    echo "-- GPU 用户态（Mesa panfrost + GBM/EGL）"
+    chk "panfrost 用户态驱动已烘焙 (panfrost_dri.so)" "[ -f '$MP/usr/local/lib64/dri/panfrost_dri.so' ]"
+    chk "swrast 软渲染兜底已烘焙 (swrast_dri.so)"     "[ -f '$MP/usr/local/lib64/dri/swrast_dri.so' ]"
+    chk "Mesa 运行库入 ld 搜索路径"                   "[ -f '$MP/etc/ld.so.conf.d/000-mesa-local.conf' ]"
+    chk "LIBGL_DRIVERS_PATH 已预置 (/etc/environment)" "grep -qs 'LIBGL_DRIVERS_PATH=' '$MP/etc/environment'"
+    chk "LIBGL_DRIVERS_PATH 已预置 (profile.d)"       "grep -qs 'LIBGL_DRIVERS_PATH=' '$MP/etc/profile.d/mesa-panfrost.sh'"
+    chk "panfrost 内核模块随 vendor 内核"             "find '$MP/lib/modules' -name 'panfrost.ko*' | grep -q ."
+    ;;
+esac
+
 umount "$MP"
 echo
 if [ "$FAIL" -eq 0 ]; then

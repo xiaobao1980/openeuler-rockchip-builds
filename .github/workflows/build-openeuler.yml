@@ -171,6 +171,10 @@ jobs:
       # 无 RTC 板掉电重启归 1970 → HTTPS 全挂（certificate is not yet valid）。
       # 每次开机自动校时（chronyd -> timesyncd -> HTTP Date 兜底），见 build-image.sh §6a-2
       TIMESYNC_BOOT: "1"
+      # 基础镜像也烘焙 Mesa(panfrost) 用户态 GPU 驱动：
+      # openEuler 仓库的 mesa 不带 panfrost_dri.so（.102 实测），mpv --vo=gpu 无法初始化；
+      # 自编 Mesa 24.0.3 装入 /usr/local 并预置 LIBGL_DRIVERS_PATH（见 scripts/integrate-mesa.sh）
+      INTEGRATE: "mesa"
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4

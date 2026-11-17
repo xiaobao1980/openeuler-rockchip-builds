@@ -18,7 +18,8 @@
 #   GROWFS_FIRSTBOOT=0  禁用首启自动扩容服务（默认启用；烧到大卡/eMMC 后自动吃满整盘）
 #   TIMESYNC_BOOT=0     禁用开机校时服务（默认启用；无 RTC 板掉电重启归 1970 后
 #                       所有 HTTPS 报 certificate is not yet valid，必须每次开机校时）
-#   INTEGRATE=none|iot   烘焙 IoT 服务栈（Node-RED / Mosquitto / Zigbee2MQTT）
+#   INTEGRATE=none|iot|desktop|mesa   烘焙 IoT 服务栈 / 桌面栈 / Mesa(panfrost) GPU 用户态
+#               （逗号组合，例：INTEGRATE=desktop,mesa 同时烘焙桌面与 panfrost）
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
 #               见 scripts/integrate-iot.sh 的选项说明
 # ============================================================================
@@ -570,7 +571,15 @@ for _INT in "${_INTS[@]}"; do
       umount_chroot
       info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
       ;;
-    *) die "未知 INTEGRATE=$_INT（仅支持 none/iot/desktop，逗号组合）" ;;
+    mesa)
+      log "集成安装：mesa（panfrost 用户态 + GBM/EGL 后端）"
+      [ -f "$HERE/integrate-mesa.sh" ] || die "找不到 scripts/integrate-mesa.sh"
+      mount_chroot
+      bash "$HERE/integrate-mesa.sh" "$R" || die "集成安装(mesa)失败"
+      umount_chroot
+      info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+      ;;
+    *) die "未知 INTEGRATE=$_INT（仅支持 none/iot/desktop/mesa，逗号组合）" ;;
   esac
 done
 

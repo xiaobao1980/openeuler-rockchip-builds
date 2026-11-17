@@ -185,7 +185,9 @@ jobs:
       # 每次开机自动校时（chronyd -> timesyncd -> HTTP Date 兜底），见 build-image.sh §6a-2
       TIMESYNC_BOOT: "1"
       # 桌面集成开关（build-image.sh 据此调用 integrate-desktop.sh）
-      INTEGRATE: "desktop"
+      # desktop,mesa：openEuler 仓库的 mesa 不带 panfrost_dri.so（.102 实测），
+      # 桌面 GL 必须额外烘焙自编 Mesa 24.0.3（见 scripts/integrate-mesa.sh）
+      INTEGRATE: "desktop,mesa"
       DESKTOP_FLAVOR: ${{ inputs.desktop }}
       MPV_X11: "1"
       KIOSK: ${{ inputs.kiosk && '1' || '0' }}
