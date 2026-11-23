@@ -7,7 +7,7 @@
 Label：sig/Desktop
 类型：feat / 增强
 
-正文如下，整段复制即可（附件请上传 mesa-panfrost-SP4.patch 与 mesa-panfrost-master.patch）：
+正文如下，整段复制即可（两份 patch 已有永久链接，可直接贴，不必传附件）：
 
 ---
 
@@ -89,7 +89,9 @@ No matches found
 两个分支各一份，均为 `patch -p1` / `git apply` 可直接套用（已在本机对原始 spec 校验通过）：
 
 - `mesa-panfrost-SP4.patch` —— `openEuler-24.03-LTS-SP4`，`24.0.3-7` → `24.0.3-8`
+  补丁（raw，锁定 commit 477bf6f）：<https://raw.githubusercontent.com/xiaobao1980/openeuler-rockchip-builds/477bf6ff54cf6fb26e2312d25a841f3b16d540ed/upstream/mesa-panfrost-SP4.patch>
 - `mesa-panfrost-master.patch` —— `master`，`25.0.7-3` → `25.0.7-4`
+  补丁（raw，锁定 commit 477bf6f）：<https://raw.githubusercontent.com/xiaobao1980/openeuler-rockchip-builds/477bf6ff54cf6fb26e2312d25a841f3b16d540ed/upstream/mesa-panfrost-master.patch>
 
 SP4 改动全文：
 
@@ -115,6 +117,9 @@ SP4 改动全文：
 ```
 
 写法与现有 `vc4` / `v3d` 完全同构，也与 Fedora 的 `with_panfrost` 开关一致，无新结构。
+
+完整材料（issue 正文、commit message 模板、提交前说明）在
+<https://raw.githubusercontent.com/xiaobao1980/openeuler-rockchip-builds/477bf6ff54cf6fb26e2312d25a841f3b16d540ed/upstream/mesa-panfrost-issue.md>，补丁基线为上文所列分支的当前 HEAD。
 
 ### 7. 验证方法
 
