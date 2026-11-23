@@ -119,7 +119,7 @@ SP4 改动全文：
 写法与现有 `vc4` / `v3d` 完全同构，也与 Fedora 的 `with_panfrost` 开关一致，无新结构。
 
 完整材料（issue 正文、commit message 模板、提交前说明）在
-<https://raw.githubusercontent.com/xiaobao1980/openeuler-rockchip-builds/477bf6ff54cf6fb26e2312d25a841f3b16d540ed/upstream/mesa-panfrost-issue.md>，补丁基线为上文所列分支的当前 HEAD。
+<https://raw.githubusercontent.com/xiaobao1980/openeuler-rockchip-builds/main/upstream/mesa-panfrost-issue.md>，补丁基线为上文所列分支的当前 HEAD。
 
 ### 7. 验证方法
 
