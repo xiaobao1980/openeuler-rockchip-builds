@@ -1,0 +1,31 @@
+mesa: enable panfrost gallium driver on arm/aarch64
+
+openEuler's mesa.spec turns on vc4 / v3d / kmsro for %{arm} and aarch64 but
+never had panfrost, so mesa-dri-drivers on a Mali board ships only
+swrast_dri.so, kms_swrast_dri.so and the kmsro dummy display drivers. There is
+no 3D driver at all, so GLX, EGL and GBM silently fall back to CPU rendering.
+
+Measured on RK3576 (Mali-G52 MC3) with openEuler 24.03-LTS-SP4:
+
+  ls /usr/lib64/dri/            -> no panfrost_dri.so
+  dnf provides '*/panfrost_dri.so' -> no matches
+  glxinfo -B                    -> llvmpipe / softpipe
+  mpv --vo=gpu --gpu-context=drm -> "Failed to create GBM surface"
+  mpv --vo=drm (4K60 HEVC)      -> ~4 fps
+
+The kernel side is fine: CONFIG_DRM_PANFROST=m, panfrost.ko loaded,
+/dev/dri/renderD128 present. Building the same 24.0.3 with panfrost enabled
+gives GL_RENDERER 'Mali-G52 r1 (Panfrost)' and steady 4K60 with
+--gpu-context=drm plus hwdec=rkmpp (drm_prime zero copy).
+
+Cost of the change: one switch plus one driver object. No new dependency -
+with_hardware is 1 on aarch64, so llvm-devel and libdrm-devel >= 2.4.103 are
+already BuildRequires, SP4 ships libdrm 2.4.119 whose libdrm-devel already
+carries panfrost_drm.h, and the gallium panfrost path does not need LLVM
+(it builds with -Dllvm=disabled as well). -Dvulkan-drivers is untouched, so
+Fedora's clang/SPIRV BuildRequires gate for panvk is not triggered here.
+Non-arm architectures are unaffected because the define sits inside
+%ifarch %{arm} aarch64. This is the same switch Fedora already carries.
+
+Id:#<ISSUE_NUMBER>
+SUG:<ISSUE_URL>

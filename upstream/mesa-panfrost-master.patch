@@ -1,0 +1,66 @@
+From: xiaobao <18916331286@189.cn>
+Subject: [PATCH] mesa: enable panfrost gallium driver on arm/aarch64
+
+Branch: master    Version: 25.0.7    Release: 3 -> 4
+
+openEuler's gallium driver list has no panfrost, so on aarch64 boards with a
+Mali GPU (RK3576 / Mali-G52 MC3) mesa-dri-drivers ships only swrast and
+kms_swrast plus the kmsro dummy display drivers, and GLX/EGL/GBM fall back to
+software rendering. panfrost does not require LLVM, so enabling it costs only
+one extra driver object. This is the same switch Fedora already carries
+(with_panfrost plus the panfrost token in its gallium driver list).
+
+Generated with signature: xiaobao <18916331286@189.cn>  issue #<ISSUE_NUMBER>
+NOTE: rebase the hunks onto the PR base commit if mesa.spec moved since.
+
+--- a/mesa.spec
++++ b/mesa.spec
+@@ -40,6 +40,7 @@
+ %define with_vc4       1
+ %define with_v3d       1
+ %define with_kmsro     1
++%define with_panfrost  1
+ %endif
+ 
+ %ifarch riscv64
+@@ -65,7 +66,7 @@
+ Name:           mesa
+ Summary:        Mesa graphics libraries
+ Version:        25.0.7
+-Release:        3
++Release:        4
+ 
+ License:        MIT
+ URL:            https://www.mesa3d.org
+@@ -333,7 +334,7 @@
+   -Dplatforms=x11,wayland \
+   -Dosmesa=true \
+ %if 0%{?with_hardware}
+-  -Dgallium-drivers=softpipe,llvmpipe%{?with_iris:,iris},virgl,nouveau%{?with_vmware:,svga},radeonsi,r300,r600%{?with_freedreno:,freedreno}%{?with_etnaviv:,etnaviv}%{?with_tegra:,tegra}%{?with_vc4:,vc4}%{?with_v3d:,v3d}%{?with_crocus:,crocus}%{?with_vulkan_hw:,zink} \
++  -Dgallium-drivers=softpipe,llvmpipe%{?with_iris:,iris},virgl,nouveau%{?with_vmware:,svga},radeonsi,r300,r600%{?with_freedreno:,freedreno}%{?with_etnaviv:,etnaviv}%{?with_tegra:,tegra}%{?with_vc4:,vc4}%{?with_v3d:,v3d}%{?with_panfrost:,panfrost}%{?with_crocus:,crocus}%{?with_vulkan_hw:,zink} \
+ %else
+   -Dgallium-drivers=softpipe,llvmpipe,virgl \
+ %endif
+@@ -490,6 +491,9 @@
+ %endif
+ %if 0%{?with_v3d}
+ %{_libdir}/dri/v3d_dri.so
++%endif
++%if 0%{?with_panfrost}
++%{_libdir}/dri/panfrost_dri.so
+ %endif
+ %if 0%{?with_kmsro}
+ %{_libdir}/dri/armada-drm_dri.so
+@@ -593,6 +597,12 @@
+ %endif
+ 
+ %changelog
++* Tue Nov 24 2026 xiaobao <18916331286@189.cn> - 25.0.7-4
++- enable panfrost gallium driver on arm/aarch64, so boards with a Mali GPU
++  (e.g. RK3576 / Mali-G52 MC3) get hardware GL/EGL/GBM from
++  mesa-dri-drivers instead of silently falling back to software rendering.
++  See issue #<ISSUE_NUMBER>.
++
+ * Wed Jul 08 2026 Wenlong Zhang <zhangwenlong@loongson.cn> - 25.0.7-3
+ - zink_dri.so is unpackaged on loongarch64
+ 
