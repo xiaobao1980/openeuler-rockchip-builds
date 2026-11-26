@@ -322,6 +322,23 @@ info "MPP=$(cr 'pkg-config --modversion rockchip_mpp')"
 info "RGA=$(cr 'pkg-config --modversion librga')"
 
 # 3.4 ffmpeg-rockchip（隔离到 FFMPEG_LIBDIR）
+# 先打 10-bit pitch 修复：上游线性分支把 MPP 的「像素」单位 hor_stride 直接当 DRM「字节」
+# pitch 用，NV15/NV20 的 planes[1].offset 与 linesize 全错位 —— 10-bit 零拷贝蓝屏、
+# 拷回在 imgutils.c 断言失败都出自这一处（RK3576 板端已实证）。
+log "应用 ffmpeg-rockchip 10-bit pitch 补丁"
+( cd "$SRC/ffmpeg-rockchip"
+  if grep -qs 'rk3576-10bit-pitch' libavcodec/rkmppdec.c; then
+    info "pitch 补丁已在（重复执行或上游已含），跳过"
+  elif git apply --check "$HERE/ffmpeg-rockchip-10bit-pitch.patch" 2>/dev/null; then
+    git apply "$HERE/ffmpeg-rockchip-10bit-pitch.patch" && info "pitch 补丁已应用 (git apply)"
+  elif patch -p1 -F 0 --dry-run --forward < "$HERE/ffmpeg-rockchip-10bit-pitch.patch" >/dev/null 2>&1; then
+    patch -p1 -F 0 --forward < "$HERE/ffmpeg-rockchip-10bit-pitch.patch" >/dev/null && info "pitch 补丁已应用 (patch -p1)"
+  fi
+  grep -q 'rk3576-10bit-pitch' libavcodec/rkmppdec.c || {
+    echo "pitch 补丁未生效：上游 rkmppdec.c 已改版，需重新对齐 scripts/ffmpeg-rockchip-10bit-pitch.patch"
+    exit 1; } ) \
+  || die "ffmpeg-rockchip 10-bit pitch 补丁未能生效"
+
 ( cd "$SRC/ffmpeg-rockchip"
   cr "export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:/usr/local/share/pkgconfig:\$PKG_CONFIG_PATH; \
       cd /opt/rk-src/ffmpeg-rockchip && ./configure --prefix=/usr/local --libdir=$FFMPEG_LIBDIR \
@@ -435,7 +452,7 @@ if want wayland || want both; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. mpv 运行时配置 + mpv-auto（修正版，三后端探测）
+# 7. mpv 运行时配置 + mpv-auto（后端链：真判活 + 失败逐级降级）
 # ---------------------------------------------------------------------------
 log "写 mpv.conf / udev / mpv-auto"
 mkdir -p "$R/etc/mpv"
@@ -460,30 +477,101 @@ EOF
 
 cat > "$R/usr/local/bin/mpv-auto" <<'EOF'
 #!/usr/bin/env bash
-# 自动选择显示后端；传入的 mpv 参数原样透传，仍可手动 --gpu-context/--vo 覆盖
+# 显示后端选择链：先按会话挑链，再逐级试；只有 mpv 没能建立显示才降级，出过画面就认定后端无罪。
+#
+# 覆盖入口：
+#   MPV_AUTO_BACKEND=<名>  钉死单后端、不降级（板级对比实测用）
+#   MPV_AUTO_CONNECTOR / MPV_AUTO_MODE  覆盖 KMS 输出（默认 HDMI-A-1 / mode 1）
+#   MPV_AUTO_STATE=<路径>  记录最终后端，默认 /run/mpv-auto.backend
 set -u
 MPV="$(command -v mpv 2>/dev/null || echo /usr/local/bin/mpv)"
-args=("$@")
-for a in "${args[@]}"; do
+CONN="${MPV_AUTO_CONNECTOR:-HDMI-A-1}"
+MODE="${MPV_AUTO_MODE:-1}"
+STATE="${MPV_AUTO_STATE:-/run/mpv-auto.backend}"
+LOG="$(mktemp "${TMPDIR:-/tmp}/mpv-auto.XXXXXX")"
+trap 'rm -f "$LOG"' EXIT
+say() { printf 'mpv-auto: %s\n' "$*" >&2; }
+
+BACKENDS="wl-copy wl-zero wl-soft x11-copy x11-zero x11-soft kms-zero kms-copy kms-rga soft-drm"
+spec() {
+  case "$1" in
+    # 会话态：合成器已占 DRM master，只能在会话内选解码路径
+    wl-copy)   echo "--gpu-context=wayland --hwdec=rkmpp-copy" ;;
+    wl-zero)   echo "--gpu-context=wayland --hwdec=rkmpp" ;;
+    wl-soft)   echo "--gpu-context=wayland --hwdec=no" ;;
+    x11-copy)  echo "--gpu-context=x11egl --hwdec=rkmpp-copy" ;;
+    x11-zero)  echo "--gpu-context=x11egl --hwdec=rkmpp" ;;
+    x11-soft)  echo "--gpu-context=x11egl --hwdec=no" ;;
+    # 无桌面/服务态：零拷贝 -> 拷回 -> RGA+KMS 直出 -> 软解
+    kms-zero)  echo "--hwdec=rkmpp --vo=gpu --gpu-context=drm --drm-connector=$CONN --drm-mode=$MODE" ;;
+    kms-copy)  echo "--hwdec=rkmpp-copy --vo=gpu --gpu-context=drm --drm-connector=$CONN --drm-mode=$MODE" ;;
+    kms-rga)   echo "--hwdec=rkmpp-copy --vo=drm --drm-connector=$CONN --drm-mode=$MODE" ;;
+    soft-drm)  echo "--hwdec=no --vo=drm --drm-connector=$CONN --drm-mode=$MODE" ;;
+    *)         return 1 ;;
+  esac
+}
+
+for a in "$@"; do
   case "$a" in
-    --vo=*|--gpu-context=*) exec "$MPV" "${args[@]}" ;;
+    --vo=*|--gpu-context=*) exec "$MPV" "$@" ;;
+    --version|--help)       exec "$MPV" "$@" ;;
+    --backends)             echo $BACKENDS; exit 0 ;;
   esac
 done
-# 1) Wayland 会话（套接字真实存在才认，防僵尸变量）
+
+chain=()
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    sock="${WAYLAND_DISPLAY#unix:}"
-    [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$sock" ] || sock=""
-    [ -n "$sock" ] && exec "$MPV" --gpu-context=wayland "${args[@]}"
+  sock="${WAYLAND_DISPLAY#unix:}"
+  # wl-copy 排在零拷贝前：mutter 与 rkvdec 的 dmabuf 互操作在 3576 实测持续播放必崩，
+  # 崩在运行中而非启动时，链式降级兜不住，只能默认绕开。
+  [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$sock" ] && chain=(wl-copy wl-zero wl-soft)
 fi
-# 2) X11 会话且 EGL 可用（x11egl 走 GPU 渲染）—— 先探测再决定，避免误报错
-if [ -n "${DISPLAY:-}" ] && ldconfig -p | grep -q 'libEGL\.so'; then
-    if "$MPV" --gpu-context=help 2>/dev/null | grep -q x11egl; then
-        exec "$MPV" --gpu-context=x11egl "${args[@]}"
-    fi
+if [ ${#chain[@]} -eq 0 ] && [ -n "${DISPLAY:-}" ] \
+   && "$MPV" --gpu-context=help 2>/dev/null | grep -q x11egl; then
+  chain=(x11-copy x11-zero x11-soft)
 fi
-# 3) 无桌面/纯命令行/服务态：GPU 合成 + DRM 上下文（rkmpp 硬解直通，零拷贝）
-exec "$MPV" --hwdec=rkmpp --vo=gpu --gpu-context=drm \
-  --drm-connector=HDMI-A-1 --drm-mode=1 "${args[@]}"
+if [ ${#chain[@]} -eq 0 ]; then
+  if [ -d /dev/dri ]; then chain=(kms-zero kms-copy kms-rga soft-drm); else chain=(soft-drm); fi
+fi
+if [ -n "${MPV_AUTO_BACKEND:-}" ]; then
+  spec "$MPV_AUTO_BACKEND" >/dev/null 2>&1 || { say "未知后端 '$MPV_AUTO_BACKEND'，可用：$BACKENDS"; exit 2; }
+  chain=("$MPV_AUTO_BACKEND")
+else
+  # 上次成功的后端放链首：GPU 起不来的板子不必每次播放都白撞前几级。
+  # 只认同一条链内的缓存——会话态与无桌面的后端互斥（合成器占 DRM master），跨链提权会白试。
+  prev="$(cat "$STATE" 2>/dev/null || true)"
+  in_chain=0
+  for c in "${chain[@]}"; do [ "$c" = "$prev" ] && in_chain=1; done
+  if [ "$in_chain" -eq 1 ] && [ "${chain[0]}" != "$prev" ]; then
+    rest=()
+    for c in "${chain[@]}"; do [ "$c" != "$prev" ] && rest+=("$c"); done
+    chain=("$prev" "${rest[@]}")
+  fi
+fi
+
+for b in "${chain[@]}"; do
+  say "后端=$b"
+  read -r -a opts <<<"$(spec "$b")"
+  "$MPV" "${opts[@]}" "$@" 2>&1 | tee -a "$LOG"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$b" > "$STATE" 2>/dev/null || :
+    exit 0
+  fi
+  # mpv 打出 "VO: [xxx] WxH ..." 就说明显示后端真建起来了，失败在片源/其它环节
+  if grep -qE '^VO: \[' "$LOG"; then
+    say "后端 $b 已建立显示，退出码 $rc 与后端无关，不降级"
+    exit "$rc"
+  fi
+  if grep -qiE 'Failed to open|No such file|unrecognized file format' "$LOG"; then
+    say "片源打不开，与显示后端无关，不降级"
+    exit "$rc"
+  fi
+  : > "$LOG"
+  say "后端 $b 未能建立显示 -> 降级"
+done
+say "后端链全部失败"
+exit 1
 EOF
 chmod +x "$R/usr/local/bin/mpv-auto"
 

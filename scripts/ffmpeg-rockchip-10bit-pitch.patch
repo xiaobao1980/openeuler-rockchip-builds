@@ -1,0 +1,17 @@
+diff --git a/libavcodec/rkmppdec.c b/libavcodec/rkmppdec.c
+index bec4fb8..c0599dc 100644
+--- a/libavcodec/rkmppdec.c
++++ b/libavcodec/rkmppdec.c
+@@ -650,6 +650,12 @@ static int rkmpp_export_frame(AVCodecContext *avctx, AVFrame *frame, MppFrame mp
+         layer->planes[0].offset = 0;
+         layer->planes[0].pitch  = mpp_frame_get_hor_stride(mpp_frame);
+ 
++        /* rk3576-10bit-pitch: MPP 的 hor_stride 对 10-bit 是像素数，而 DRM 描述符的
++         * pitch 要求字节。漏乘 2 时 planes[1].offset 与 linesize 全部错位，
++         * NV15/NV20 零拷贝采样蓝屏、拷回在 imgutils.c 断言失败。 */
++        if (layer->format == DRM_FORMAT_NV15 || layer->format == DRM_FORMAT_NV20)
++            layer->planes[0].pitch <<= 1;
++
+         layer->planes[1].object_index = 0;
+         layer->planes[1].offset = layer->planes[0].pitch * mpp_frame_get_ver_stride(mpp_frame);
+         layer->planes[1].pitch  = layer->planes[0].pitch;
