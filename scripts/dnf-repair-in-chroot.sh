@@ -24,16 +24,31 @@ info() { printf '             %s\n' "$*"; }
 warn() { printf '\033[1;33m[DNF-REPAIR-WARN] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[DNF-REPAIR-ERR] %s\033[0m\n' "$*" >&2; exit 1; }
 
-# ---- 版本/架构：从 rootfs 自身读取，不靠调用方传参 ----
-VER="$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")"
-[ -n "$VER" ] || die "无法从 /etc/os-release 读 VERSION_ID"
-ARCH="$(uname -m)"
-[ "$ARCH" = aarch64 ] || die "非 aarch64 chroot（ARCH=${ARCH}），源路径按 aarch64 拼装"
-log "目标系统: openEuler $VER / $ARCH"
-
+# ---- 目录定义（版本探测需要读原始 repo）----
 REPO_DIR=/etc/yum.repos.d
 BAK_DIR="$REPO_DIR/.orig-bak"
 FIXED="$REPO_DIR/000-openeuler-fixed.repo"
+
+# ---- 版本/架构：从 rootfs 自身读取，不靠调用方传参 ----
+# 坑（2026-11-27 CI 实证）：openEuler 的 VERSION_ID 只有 "24.03"，而源站目录名是
+# "openEuler-24.03-LTS-SP4" —— SP 后缀藏在同一行的 PRETTY_NAME 括号里：
+#   VERSION_ID="24.03" PRETTY_NAME="openEuler 24.03 (LTS-SP4)"
+# 直接用 VERSION_ID 会拼出 openEuler-24.03/... → 华为云/官方站双 404。
+# 优先 VERSION_ID + 括号 SP 字段拼装；缺失括号时回退从原始 repo 的 baseurl 提取。
+BASE_VER="$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")"
+SP="$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION:-${PRETTY_NAME:-}}" | sed -n 's/.*(\([^)]*\)).*/\1/p')"
+if [ -n "$BASE_VER" ] && [ -n "$SP" ]; then
+  VER="$BASE_VER-$SP"
+  VER_SRC="os-release(VERSION_ID + SP)"
+else
+  VER="$(grep -hoE 'openEuler-[0-9]+\.[0-9]+(-[A-Za-z0-9]+)*' "$REPO_DIR"/*.repo 2>/dev/null | sed 's/^openEuler-//' | sort -r | head -1)"
+  VER_SRC="原始 repo baseurl"
+fi
+[ -n "$VER" ] || die "无法探测 openEuler 版本号（VERSION_ID=${BASE_VER:-空}，repo 也无版本串）"
+ARCH="$(uname -m)"
+[ "$ARCH" = aarch64 ] || die "非 aarch64 chroot（ARCH=${ARCH}），源路径按 aarch64 拼装"
+log "目标系统: openEuler $VER / $ARCH"
+info "版本来源: $VER_SRC"
 
 # GPG key 存在就保持校验，缺失则降级为不校验（避免引入新的失败点）
 GPG_KEY="$(ls /etc/pki/rpm-gpg/RPM-GPG-KEY-openEuler* 2>/dev/null | head -1 || true)"
