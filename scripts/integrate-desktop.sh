@@ -4,6 +4,7 @@
 #
 # 与 integrate-iot.sh 同接口：
 #   sudo bash integrate-desktop.sh <rootfs目录> [--flavor=both|x11|wayland] [--mpv-x11=1] [--admin-user=iot] [--kiosk=0|1] [--kiosk-video=<文件>]
+#   sudo bash integrate-desktop.sh <rootfs目录> --media-only=1        # 无桌面：只烘焙 rkmpp 媒体栈 + mpv-auto(KMS 直控)
 #
 # 设计要点：
 #   ① 由 build-image.sh 在 chroot 已挂载的前提下调用；本脚本再做幂等挂载 + resolv 修复
@@ -12,6 +13,10 @@
 #   ④ wayland-protocols 源码升级到 1.50 → mpv wayland 后端自动开启；mpv 已 -Dx11=enabled
 #      → 最终 mpv 三后端（drm + x11egl + wayland）全开，rkmpp 硬解零拷贝
 #   ⑤ lightdm 统一显示管理器：autologin-user=<admin> 进选定会话（both 默认 labwc/Wayland）
+#   ⑥ --media-only=1（或 MEDIA_ONLY=1）：桌面/无桌面共用同一份媒体栈源码与补丁，
+#      media-only 跳过 Wayland 栈/UKUI/lightdm/seatd/graphical.target/kiosk，
+#      只留 libplacebo/mpp/rga/ffmpeg-rockchip(锁 9.1, pitch 补丁)/mpv + mpv-auto 的 KMS 后端链。
+#      libdisplay-info 是 mpv drm VO 硬依赖，故从 wayland 条件块移出、两种模式都编译。
 #
 # 前置：openEuler aarch64 rootfs、arm runner（chroot 原生编译）、root、网络
 # ============================================================================
@@ -25,6 +30,7 @@ MPV_X11="${MPV_X11:-1}"
 ADMIN_USER="${ADMIN_USER:-iot}"
 KIOSK="${KIOSK:-0}"
 KIOSK_VIDEO="${KIOSK_VIDEO:-}"
+MEDIA_ONLY="${MEDIA_ONLY:-0}"
 for a in "$@"; do
   case "$a" in
     --flavor=*)       FLAVOR="${a#*=}" ;;
@@ -32,9 +38,20 @@ for a in "$@"; do
     --admin-user=*)   ADMIN_USER="${a#*=}" ;;
     --kiosk=*)        KIOSK="${a#*=}" ;;
     --kiosk-video=*)  KIOSK_VIDEO="${a#*=}" ;;
+    --media-only=*)   MEDIA_ONLY="${a#*=}" ;;
     *) echo "未知参数: $a" >&2; exit 2 ;;
   esac
 done
+
+# media-only：无桌面(headless) 镜像只烘焙媒体栈 + mpv-auto(KMS 直控)，与桌面共用同一份源码和补丁。
+# 强制关掉桌面相关开关（FLAVOR/X11/KIOSK），避免后续 want() 或 lightdm 段误启用桌面组件。
+case "$MEDIA_ONLY" in 1|true|yes|on|TRUE) MEDIA_ONLY=1 ;; *) MEDIA_ONLY=0 ;; esac
+if [ "$MEDIA_ONLY" = 1 ]; then
+  FLAVOR=none
+  MPV_X11=0
+  KIOSK=0
+  KIOSK_VIDEO=""
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$R/opt/rk-src"                      # 源码树落在 rootfs 内，chroot 编译即用
@@ -171,14 +188,16 @@ assert_src_tag() {
   log "源码版本校验 OK: $(basename "$d")=$got"
 }
 
+# ---- libdisplay-info 源码（始终：mpv 的 drm VO 硬依赖 EDID 解析，桌面/无桌面都要） ----
+mkdir -p "$SRC/wayland-src"
+git_clone_retry ""         "$SRC/libdisplay-info" \
+  https://gitlab.freedesktop.org/emersion/libdisplay-info.git https://github.com/emersion/libdisplay-info.git
+
 # ---- Wayland 栈源码（both / wayland） ----
 if want wayland || want both; then
-  mkdir -p "$SRC/wayland-src"
   git_clone_retry ""         "$SRC/wayland-src/wayland-protocols" \
     https://gitlab.freedesktop.org/wayland/wayland-protocols.git https://github.com/wayland-project/wayland-protocols.git
   git_clone_retry ""         "$SRC/wayland-src/libxkbcommon" https://github.com/xkbcommon/libxkbcommon.git
-  git_clone_retry ""         "$SRC/wayland-src/libdisplay-info" \
-    https://gitlab.freedesktop.org/emersion/libdisplay-info.git https://github.com/emersion/libdisplay-info.git
   git_clone_retry ""         "$SRC/wayland-src/seatd" https://github.com/kennylevinsen/seatd.git
   # 关键：--depth=1 浅克隆不带任何标签，事后 git checkout <tag> 必然失败且被静默吞掉，
   # 会一直编译仓库 master。必须用 -b <tag> 让 clone 直接落在钉死版本（第一个参数即 -b 值）。
@@ -192,20 +211,27 @@ if want wayland || want both; then
   git_clone_retry ""         "$SRC/wayland-src/foot" https://codeberg.org/dnkl/foot.git https://github.com/dnkl/foot.git || true
 fi
 
-# ---- 媒体栈源码（始终，桌面硬解） ----
+# ---- 媒体栈源码（始终，桌面 + 无桌面共用） ----
 MPV_TAG=v0.41.0
+# ffmpeg-rockchip 必须锁 9.1（libavcodec 63）：pitch 补丁按此分支的 rkmppdec.c 对齐，
+# 跟随默认分支 HEAD 一旦上游改版，补丁会 die 导致构建失败（宁可硬失败不可静默坏镜像）。
+FFMPEG_TAG=9.1
 git_clone_retry ""         "$SRC/libplacebo" https://github.com/haasn/libplacebo.git
 git_clone_retry jellyfin-mpp "$SRC/mpp" https://github.com/nyanmisaka/mpp.git https://gitee.com/nyanmisaka/mpp.git
 git_clone_retry jellyfin-rga "$SRC/rkrga" https://github.com/nyanmisaka/rk-mirrors.git https://gitee.com/nyanmisaka/rga.git
-git_clone_retry ""         "$SRC/ffmpeg-rockchip" \
+git_clone_retry "$FFMPEG_TAG" "$SRC/ffmpeg-rockchip" \
   https://github.com/nyanmisaka/ffmpeg-rockchip.git https://gitee.com/nyanmisaka/ffmpeg-rockchip.git
+# 版本校验：-b 分支名不会带 tag，assert_src_tag 不适用；直接核对 libavcodec major=63。
+FF_MAJ="$(sed -n 's/^#define[[:space:]]*LIBAVCODEC_VERSION_MAJOR[[:space:]]*//p' "$SRC/ffmpeg-rockchip/libavcodec/version_major.h" 2>/dev/null | head -1 | tr -d '[:space:]')"
+[ "$FF_MAJ" = "63" ] || die "ffmpeg-rockchip 版本校验失败：期望 libavcodec 63（9.1），实际 ${FF_MAJ:-未找到}（clone 未落在 $FFMPEG_TAG？）"
+log "ffmpeg-rockchip 版本校验 OK: tag=$FFMPEG_TAG / libavcodec=$FF_MAJ"
 git_clone_retry "$MPV_TAG" "$SRC/mpv" https://github.com/mpv-player/mpv.git
 
 # ---------------------------------------------------------------------------
 # 2. 编译 Wayland 栈（chroot 内）
 # ---------------------------------------------------------------------------
 if want wayland || want both; then
-  log "== 编译 Wayland 栈（wayland-protocols/libxkbcommon/libdisplay-info/seatd/wlroots/labwc）=="
+  log "== 编译 Wayland 栈（wayland-protocols/libxkbcommon/seatd/wlroots/labwc）=="
   # 开发库已由上方 dnf_install_loose 逐个安装（含 libinput-devel 等必需项），此处不再重复 dnf
   # 编译前强制校验钉死版本：一旦 clone 落在错版本（浅克隆曾静默编 master）立即中止，
   # 不再让 meson 走 wrap 拉到不兼容的 wlroots/libinput 版本，浪费十几分钟才发现。
@@ -240,9 +266,7 @@ if want wayland || want both; then
     || die "libxkbcommon 编译失败"
   info "libxkbcommon=$(cr 'pkg-config --modversion xkbcommon')"
 
-  # 2.3 libdisplay-info
-  ( cr "cd /opt/rk-src/wayland-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
-    || die "libdisplay-info 编译失败"
+  # 2.3 libdisplay-info 已移到媒体栈段（mpv drm VO 硬依赖，无桌面也要编）
 
   # 2.4 seatd (libseat)
   ( cr "cd /opt/rk-src/wayland-src/seatd && rm -rf build && meson setup build --prefix=/usr/local -Dman-pages=disabled -Dexamples=disabled --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
@@ -297,8 +321,14 @@ fi
 # ---------------------------------------------------------------------------
 # 3. 编译 rkmpp 媒体栈（chroot 内；补丁在宿主对源码打）
 # ---------------------------------------------------------------------------
-log "== 编译 rkmpp 媒体栈（libplacebo/mpp/rga/ffmpeg-rockchip/mpv）=="
+log "== 编译 rkmpp 媒体栈（libdisplay-info/libplacebo/mpp/rga/ffmpeg-rockchip/mpv）=="
 FFMPEG_LIBDIR=/usr/local/lib/ffmpeg-rkmpp
+
+# 3.0 libdisplay-info（mpv drm VO 硬依赖：meson.build 解析 EDID；桌面/无桌面都编）
+( cr "cd /opt/rk-src/libdisplay-info && rm -rf build && meson setup build --prefix=/usr/local --buildtype=release -Doptimization=2 && ninja -C build install && ldconfig" ) \
+  || die "libdisplay-info 编译失败"
+cr "pkg-config --exists libdisplay-info" || die "libdisplay-info 装完 pkg-config 找不到（mpv drm VO 会失败）"
+info "libdisplay-info=$(cr 'pkg-config --modversion libdisplay-info')"
 
 # 3.1 libplacebo（openEuler 无 -devel，源码编；mpv 0.40+ 硬依赖 >=6.338.2）
 ( cd "$SRC/libplacebo" && LPTAG="$(git tag -l 'v7.*' | sort -V | awk '$0 <= "v7.391.0"' | tail -1)"
@@ -360,16 +390,19 @@ log "应用 vd_lavc-rkmpp-drm 补丁"
 git apply "$HERE/vd_lavc-rkmpp-drm.patch" 2>/tmp/vd-patch.err || patch -p1 --forward < "$HERE/vd_lavc-rkmpp-drm.patch" 2>>/tmp/vd-patch.err \
   || die "vd_lavc-rkmpp-drm.patch 应用失败: $(head -5 /tmp/vd-patch.err)"
 
-# 3.6 mpv 编译（x11 + drm + wayland 三后端全开；wayland 后端因 wayland-protocols>=1.34 自动开启）
+# 3.6 mpv 编译（桌面：x11+drm+wayland 三后端；无桌面 media-only：仅 drm，避免链到未编译的桌面库）
 WP_VER="$(cr 'pkg-config --modversion wayland-protocols 2>/dev/null')"
 [ -z "$WP_VER" ] && WP_VER=0
 WL_BUILD=enabled
-if [ "$(printf '%s\n' 1.34 "$WP_VER" | sort -V | head -1)" != "1.34" ]; then
+if [ "$MEDIA_ONLY" = 1 ]; then
+  WL_BUILD=disabled
+elif [ "$(printf '%s\n' 1.34 "$WP_VER" | sort -V | head -1)" != "1.34" ]; then
   WL_BUILD=disabled
   warn "wayland-protocols=$WP_VER < 1.34，mpv wayland 后端关闭（应已升级到 1.50，若到此告警请查编译）"
 fi
 _X11=""
 [ "${MPV_X11:-1}" = "1" ] && _X11="-Dx11=enabled -Dgl-x11=enabled -Degl-x11=enabled"
+[ "$MEDIA_ONLY" = 1 ] && info "media-only：mpv 仅 drm 后端（x11/wayland 关闭），供 mpv-auto 的 KMS 链使用"
 ( cd "$SRC/mpv"
   cr "export PKG_CONFIG_PATH=$FFMPEG_LIBDIR/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/local/lib64/pkgconfig:\$PKG_CONFIG_PATH; \
       export LDFLAGS='-Wl,-rpath,/usr/local/lib -Wl,-rpath,/usr/local/lib64'; \
@@ -395,8 +428,9 @@ if want x11 || want both; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 显示管理器：lightdm（统一，autologin 到 admin 用户）
+# 5. 显示管理器：lightdm（统一，autologin 到 admin 用户）—— media-only 跳过
 # ---------------------------------------------------------------------------
+if [ "$MEDIA_ONLY" = 0 ]; then
 log "安装并配置 lightdm（autologin -> $ADMIN_USER）"
 cr "$DNFC install lightdm" >/tmp/desktop-lightdm.log 2>&1 \
   || { tail -20 /tmp/desktop-lightdm.log >&2; die "lightdm 安装失败"; }
@@ -415,6 +449,7 @@ autologin-session=$DEF_SESSION
 user-session=$DEF_SESSION
 EOF
 info "lightdm autologin -> $ADMIN_USER / session=$DEF_SESSION"
+fi
 
 # X11（UKUI）显示配置：modesetting + glamor（走 panfrost GLES）
 if want x11 || want both; then
@@ -656,8 +691,9 @@ KOEOF
 fi
 
 # ---------------------------------------------------------------------------
-# 8. 设为图形界面默认启动 + 启用 lightdm
+# 8. 设为图形界面默认启动 + 启用 lightdm —— media-only 跳过（headless 保持 multi-user.target）
 # ---------------------------------------------------------------------------
+if [ "$MEDIA_ONLY" = 0 ]; then
 log "设置 graphical.target 默认 + 启用 lightdm"
 # default.target -> graphical.target（chroot 内 systemctl set-default 不可靠，直接建软链）
 ln -sf /usr/lib/systemd/system/graphical.target "$R/etc/systemd/system/default.target" 2>/dev/null || true
@@ -668,6 +704,7 @@ if [ -f "$R/usr/lib/systemd/system/lightdm.service" ]; then
 else
   warn "找不到 lightdm.service，未启用显示管理器"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # 9. 清理
@@ -677,9 +714,16 @@ cr "dnf clean all" >/dev/null 2>&1 || true
 rm -rf "$R/var/cache/dnf"/* "$R/var/cache/yum"/* 2>/dev/null || true
 rm -rf "$R/tmp"/* 2>/dev/null || true
 
-info "桌面集成后 rootfs: $(du -sh "$R" | cut -f1)"
-log "桌面集成安装完成"
-_KIOSK_TAG=""
-[ "$KIOSK" = "1" ] && _KIOSK_TAG=" / kiosk=开"
-info "桌面组合: $FLAVOR / autologin: $ADMIN_USER / 会话: $DEF_SESSION$_KIOSK_TAG"
-info "mpv 三后端: drm + x11egl + wayland（rkmpp 硬解）"
+info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+if [ "$MEDIA_ONLY" = 1 ]; then
+  log "无桌面媒体栈集成完成（media-only）"
+  info "模式: headless / mpv 后端: drm / 播放器入口: /usr/local/bin/mpv-auto（KMS 直控 + rkmpp）"
+  info "ffmpeg-rockchip: $FFMPEG_TAG (libavcodec $FF_MAJ) / mpv: $MPV_TAG / pitch 补丁已入链"
+else
+  log "桌面集成安装完成"
+  _KIOSK_TAG=""
+  [ "$KIOSK" = "1" ] && _KIOSK_TAG=" / kiosk=开"
+  info "桌面组合: $FLAVOR / autologin: $ADMIN_USER / 会话: ${DEF_SESSION:-无}$_KIOSK_TAG"
+  info "mpv 三后端: drm + x11egl + wayland（rkmpp 硬解）"
+  info "ffmpeg-rockchip: $FFMPEG_TAG (libavcodec $FF_MAJ) / mpv: $MPV_TAG / pitch 补丁已入链"
+fi

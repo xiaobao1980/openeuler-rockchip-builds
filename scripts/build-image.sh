@@ -18,8 +18,12 @@
 #   GROWFS_FIRSTBOOT=0  禁用首启自动扩容服务（默认启用；烧到大卡/eMMC 后自动吃满整盘）
 #   TIMESYNC_BOOT=0     禁用开机校时服务（默认启用；无 RTC 板掉电重启归 1970 后
 #                       所有 HTTPS 报 certificate is not yet valid，必须每次开机校时）
-#   INTEGRATE=none|iot|desktop|mesa   烘焙 IoT 服务栈 / 桌面栈 / Mesa(panfrost) GPU 用户态
-#               （逗号组合，例：INTEGRATE=desktop,mesa 同时烘焙桌面与 panfrost）
+#   INTEGRATE=none|iot|desktop|mesa|media
+#               烘焙 IoT 服务栈 / 桌面栈 / Mesa(panfrost) GPU 用户态 / 无桌面媒体栈
+#               （逗号组合，例：INTEGRATE=desktop,mesa 同时烘焙桌面与 panfrost；
+#                 INTEGRATE=media,mesa 烘焙无桌面 KMS 直控播放器 + panfrost）
+#               media 走 integrate-desktop.sh --media-only=1，与桌面共用同一份
+#               rkmpp/ffmpeg(Pitch 补丁)/mpv 源码与补丁，但不装桌面/显示管理器。
 #   IOT_STACK / IOT_MQTT_USER / IOT_MQTT_PASS / IOT_COORD / IOT_ADAPTER 等
 #               见 scripts/integrate-iot.sh 的选项说明
 # ============================================================================
@@ -534,7 +538,8 @@ umount_chroot() {
   umount "$R/sys"    2>/dev/null || umount -l "$R/sys"    2>/dev/null || true
 }
 
-# INTEGRATE 支持逗号分隔组合：none | iot | desktop（例：iot,desktop 同时烘焙）
+# INTEGRATE 支持逗号分隔组合：none | iot | desktop | mesa | media（例：iot,desktop 同时烘焙）
+# media = 无桌面媒体栈（ffmpeg-rockchip 9.1 + pitch 补丁 + mpv + mpv-auto KMS 直控）
 # 每个分支独立 mount/umount chroot（mount_chroot 幂等，重复挂载安全）
 IFS=',' read -ra _INTS <<< "${INTEGRATE:-none}"
 for _INT in "${_INTS[@]}"; do
@@ -574,6 +579,18 @@ for _INT in "${_INTS[@]}"; do
       umount_chroot
       info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
       ;;
+    media)
+      log "集成安装：media（无桌面 rkmpp 媒体栈 + mpv-auto KMS 直控）"
+      [ -f "$HERE/integrate-desktop.sh" ] || die "找不到 scripts/integrate-desktop.sh"
+      mount_chroot
+      # 复用 integrate-desktop.sh 的 --media-only=1：同一份源码/补丁，跳过所有桌面组件
+      bash "$HERE/integrate-desktop.sh" "$R" \
+        --media-only=1 \
+        --admin-user="${ADMIN_USER:-iot}" \
+        || die "集成安装(media)失败"
+      umount_chroot
+      info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
+      ;;
     mesa)
       log "集成安装：mesa（panfrost 用户态 + GBM/EGL 后端）"
       [ -f "$HERE/integrate-mesa.sh" ] || die "找不到 scripts/integrate-mesa.sh"
@@ -582,7 +599,7 @@ for _INT in "${_INTS[@]}"; do
       umount_chroot
       info "集成后 rootfs: $(du -sh "$R" | cut -f1)"
       ;;
-    *) die "未知 INTEGRATE=$_INT（仅支持 none/iot/desktop/mesa，逗号组合）" ;;
+    *) die "未知 INTEGRATE=$_INT（仅支持 none/iot/desktop/mesa/media，逗号组合）" ;;
   esac
 done
 

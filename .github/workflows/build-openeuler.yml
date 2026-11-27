@@ -171,10 +171,13 @@ jobs:
       # 无 RTC 板掉电重启归 1970 → HTTPS 全挂（certificate is not yet valid）。
       # 每次开机自动校时（chronyd -> timesyncd -> HTTP Date 兜底），见 build-image.sh §6a-2
       TIMESYNC_BOOT: "1"
-      # 基础镜像也烘焙 Mesa(panfrost) 用户态 GPU 驱动：
-      # openEuler 仓库的 mesa 不带 panfrost_dri.so（.102 实测），mpv --vo=gpu 无法初始化；
-      # 自编 Mesa 24.0.3 装入 /usr/local 并预置 LIBGL_DRIVERS_PATH（见 scripts/integrate-mesa.sh）
-      INTEGRATE: "mesa"
+      # 基础镜像(无桌面)烘焙 Mesa(panfrost) + media(无桌面媒体栈)：
+      # - mesa：openEuler 仓库的 mesa 不带 panfrost_dri.so（.102 实测），mpv --vo=gpu 无法初始化；
+      #         自编 Mesa 24.0.3 装入 /usr/local 并预置 LIBGL_DRIVERS_PATH（scripts/integrate-mesa.sh）
+      # - media：integrate-desktop.sh --media-only=1，烘焙 ffmpeg-rockchip 9.1(pitch 补丁)
+      #         + mpp/rga + mpv(drm 后端) + mpv-auto(KMS 直控)，无桌面也能 rkmpp 硬解播放。
+      #         顺序 mesa 在前：mpv 的 drm gpu-context 要链 mesa 的 EGL/GBM。
+      INTEGRATE: "mesa,media"
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
