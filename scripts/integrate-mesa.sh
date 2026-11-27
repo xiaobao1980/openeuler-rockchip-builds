@@ -29,6 +29,7 @@
 set -euo pipefail
 
 R="${1:?用法: $0 <rootfs目录>}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MESA_TAG="mesa-24.0.3"
 SRC="$R/opt/rk-src"
 mkdir -p "$SRC"
@@ -93,6 +94,15 @@ dnf_install_loose() {
 
 log "目标系统: $(grep -E '^(PRETTY_NAME)=' "$R/etc/os-release" | cut -d= -f2- | tr -d '"')"
 log "Mesa 版本: $MESA_TAG（gallium=panfrost,swrast；llvm=disabled）"
+
+# ---------------------------------------------------------------------------
+# 0. dnf 源修复（必须先于任何 dnf install）
+#    2026-11-27 CI 第三次网络故障：repomd checksum 不匹配，4 个 calculated
+#    sha512 全相同（缓存中毒 + 多镜像校验）。--retry 无效，必须清缓存 + 固定单源。
+# ---------------------------------------------------------------------------
+# shellcheck source=lib-dnf-repair.sh
+. "$HERE/lib-dnf-repair.sh"
+dnf_repair_sources || die "dnf 源修复失败，构建依赖必然装不上，提前中止"
 
 # ---------------------------------------------------------------------------
 # 1. 构建依赖（工具链必须齐，缺一项直接死，别拖到 meson 才爆）
