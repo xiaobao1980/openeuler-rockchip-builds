@@ -52,7 +52,7 @@ if [ -n "$LOCAL" ]; then
 else
   command -v git >/dev/null || die "需要 git"
   TMP=$(mktemp -d)
-  log "稀疏克隆 $SRC_URL@$SRC_REF（只取 config/boards）"
+  log "稀疏克隆 ${SRC_URL}@${SRC_REF}（只取 config/boards）"
   git clone --depth 1 --branch "$SRC_REF" --filter=blob:none --sparse \
       "$SRC_URL" "$TMP/ab" >/dev/null 2>&1 || die "clone 失败"
   git -C "$TMP/ab" sparse-checkout set config/boards >/dev/null 2>&1

@@ -1,5 +1,5 @@
 # 由 scripts/sync-boards.sh 从 https://github.com/armbian/build/config/boards@main 生成，勿手改
-# 上游 commit: local   生成时间: 2026-11-09T08:28:14Z
+# 上游 commit: 5919204   生成时间: 2026-11-27T06:48:51Z
 #
 # 字段: board_id \t model \t soc \t dtb \t family \t status
 # status=OK 可直接构建；NO_DTB 上游用 fdtdir 自动匹配，需手工确认 DTB 名；
@@ -19,9 +19,10 @@ radxa-e24c	E24C	rk3528	rk3528-radxa-e24c-spi.dtb	rk35xx	OK
 rock-2a	ROCK 2A	rk3528	rk3528-rock-2a.dtb	rk35xx	OK
 rock-2f	ROCK 2F	rk3528	rk3528-rock-2f.dtb	rk35xx	OK
 kickpi-k3b	K3B	rk3562	rk3562-kickpi-k3b.dtb	rk35xx	OK
+bobcat-29x	29X	rk3566	rk3566-bobcat-29x.dtb	rk35xx	OK
 eltay-rm66	ELTAY RM66	rk3566	rk3566-eltay-rm66-bb-cm4.dtb	rk35xx	OK
 jp-tvbox-3566	JP-TVbox-3566	rk3566	rk3566-jp-tvbox.dtb	rk35xx	OK
-lckfb-taishanpi	LCKFB Taishan Pi	rk3566	rk3566-lckfb-tspi.dtb	rk35xx	OK
+lckfb-taishanpi	Taishan Pi 1M	rk3566	rk3566-lckfb-tspi.dtb	rk35xx	OK
 luckfox-core3566	Core3566	rk3566	rk3566-luckfox-core3566.dtb	rk35xx	OK
 nanopi-r3s	NanoPi R3S	rk3566	rk3566-nanopi-r3s.dtb	rk35xx	OK
 nanopi-r3s-lts	NanoPi R3S LTS	rk3566	rk3566-nanopi-r3s-lts.dtb	rk35xx	OK
@@ -53,6 +54,8 @@ armsom-sige5	Sige5	rk3576	rk3576-armsom-sige5.dtb	rk35xx	OK
 bananapim5pro	Banana Pi M5 Pro	rk3576	rk3576-bananapi-m5-pro.dtb	rk35xx	OK
 dshanpi-a1	100ASK DShanPI A1	rk3576	rk3576-100ask-dshanpi-a1.dtb	rk35xx	OK
 dshanpi-a1-cm5-waveshare-cm5-to-pi5-adapter	100ASK DshanPi A1 CM5 on Waveshare CM5-to-Pi5-Adapter	rk3576	rk3576-dshanpi-a1-cm5-waveshare-cm5-to-pi5-adapter.dtb	rk35xx	OK
+h96-max-m9	H96 Max M9	rk3576	rk3576-h96-max-m9.dtb	rk35xx	OK
+lckfb-taishanpi-3m	Taishan Pi 3M	rk3576	rk3576-lckfb-tspi-3m.dtb	rk35xx	OK
 lubancat-3-v2	LubanCat 3 v2	rk3576	rk3576-lubancat-3-v2.dtb	rk35xx	OK
 nanopi-m5	NanoPi M5	rk3576	rk3576-nanopi-m5.dtb	rk35xx	OK
 nanopi-r76s	NanoPi R76S	rk3576	rk3576-nanopi-r76s.dtb	rk35xx	OK
@@ -88,6 +91,7 @@ rock-5t	Rock 5T	rk3588	rk3588-rock-5t.dtb	rockchip-rk3588	OK
 turing-rk1	Turing RK1	rk3588	rk3588-turing-rk1.dtb	rockchip-rk3588	OK
 youyeetoo-yy3588	YY3588	rk3588	rk3588-youyeetoo-yy3588.dtb	rockchip-rk3588	OK
 armsom-cm7s-io	CM7s IO	rk3588s	rk3588s-armsom-cm7s-io.dtb	rockchip-rk3588	OK
+armsom-sige7s	Sige7s	rk3588s	rk3588s-armsom-sige7s.dtb	rockchip-rk3588	OK
 lubancat-4	LubanCat 4	rk3588s	rk3588s-lubancat-4.dtb	rockchip-rk3588	OK
 orangepi-cm5	OrangePi CM5	rk3588s	rk3588s-orangepi-cm5.dtb	rockchip-rk3588	OK
 orangepi5	Orange Pi 5	rk3588s	rk3588s-orangepi-5.dtb	rockchip-rk3588	OK
