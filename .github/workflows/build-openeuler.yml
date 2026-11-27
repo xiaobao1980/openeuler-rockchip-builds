@@ -265,14 +265,36 @@ jobs:
         run: |
           set -euo pipefail
           # 目录名带 openEuler- 前缀：/openEuler-24.03-LTS-SP4/virtual_machine_img/aarch64/
-          BASE="https://dl-cdn.openeuler.openatom.cn/openEuler-${OE_VER}/virtual_machine_img/aarch64"
           F="openEuler-${OE_VER}-aarch64.qcow2.xz"
+          SUBDIR="openEuler-${OE_VER}/virtual_machine_img/aarch64"
           mkdir -p in
-          echo "下载 $BASE/$F"
-          curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$BASE/$F"
-          curl -fsSL -o "in/$F.sha256sum" "$BASE/$F.sha256sum" || true
+          # 多镜像回退：GitHub Actions runner 出口 IP 偶发被 dl-cdn WAF 403 拒绝，
+          # 且 curl --retry 对 403(4xx) 不重试；逐个源尝试，成功即跳出
+          OK_BASE=""
+          for BASE in \
+            "https://dl-cdn.openeuler.openatom.cn" \
+            "https://repo.openeuler.openatom.cn" \
+            "https://mirrors.huaweicloud.com/openeuler" \
+            "https://mirrors.tuna.tsinghua.edu.cn/openeuler" \
+            "https://mirrors.ustc.edu.cn/openeuler"; do
+            URL="$BASE/$SUBDIR/$F"
+            echo "尝试下载: $URL"
+            rm -f "in/$F"
+            if curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$URL"; then
+              OK_BASE="$BASE"
+              echo "下载成功: $URL"
+              break
+            fi
+            echo "::warning::镜像不可用: $BASE"
+          done
+          [ -s "in/$F" ] || { echo "::error::所有镜像均下载失败"; exit 1; }
+          # 校验文件从成功的同一个源取：主源 403 时旧写法会静默跳过校验
+          rm -f "in/$F.sha256sum"
+          curl -fsSL --retry 3 --retry-delay 5 -o "in/$F.sha256sum" "$OK_BASE/$SUBDIR/$F.sha256sum" || true
           if [ -s "in/$F.sha256sum" ]; then
             ( cd in && sha256sum -c "$F.sha256sum" ) || { echo "::error::校验失败"; exit 1; }
+          else
+            echo "::warning::未取到 sha256sum，跳过校验（请检查镜像站）"
           fi
           ls -lh "in/$F"
           echo "OE_XZ=in/$F" >> "$GITHUB_ENV"
