@@ -242,10 +242,12 @@ gh workflow run build-openeuler-iot.yml -f board=h96-m9 -f node_red_nodes=none
 
 ```
 boards/
-├── boards.tsv              # 98 块板清单（自动生成，勿手改）
+├── boards.tsv              # 132 块板清单（自动生成，勿手改）
 ├── _template/board.conf    # 通用推导模板（改默认值只改这里）
-├── h96-m9/board.conf       # 手写覆盖：已验证的板，含实测 UUID/CMA
-└── neardi-lz200/board.conf # 手写覆盖：示例第二块板
+├── h96-m9/board.conf       # 手写覆盖：RK3576，已验证，含实测 UUID/CMA=512M
+├── neardi-lz200/board.conf # 手写覆盖：RK3576 示例第二块板
+├── cm3588-nas/board.conf   # 手写覆盖：FriendlyElec RK3588 NAS，CMA=512M
+└── rock-5-itx/board.conf   # 手写覆盖：Radxa RK3588 ITX，CMA=512M
 
 scripts/
 ├── sync-boards.sh          # 从上游 armbian/build 同步板卡清单 → boards.tsv
