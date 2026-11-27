@@ -53,7 +53,11 @@ verify() {
     return 1
   fi
   if [ -s "$OUT.sha256sum" ]; then
-    if ! ( cd "$OUT_DIR" && sha256sum -c "$F.sha256sum" ); then
+    # 关键：sha256sum -c 的 "<file>: OK" 必须走 stderr。
+    # 否则会被调用方的 IMAGE=$(bash fetch-base-image.sh ...) 一起捕获，
+    # 使变量变成两行 → $GITHUB_OUTPUT 写多行 → "Invalid format"、
+    # 后续 sha256sum "$IMAGE" 找不到文件。stdout 契约只允许最后一行路径。
+    if ! ( cd "$OUT_DIR" && sha256sum -c "$F.sha256sum" >&2 ); then
       err "随附 .sha256sum 校验失败"
       return 1
     fi
