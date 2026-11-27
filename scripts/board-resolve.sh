@@ -50,6 +50,7 @@ case "$status" in
   OK) ;;
   NO_DTB)     die "$id 上游未定义 BOOT_FDT_FILE（靠 fdtdir 自动匹配）。请建 boards/$id/board.conf 手写 DTB=" ;;
   SOC_UNKNOWN) die "$id 的 dtb 名 '$dtb' 不符合 rk3xxx-* 规则，请建 boards/$id/board.conf 手写 FAMILY/DTB" ;;
+  EOS)        die "$id 在上游 Armbian 已归档(EOS/停止支持)，仅供盘点。如需构建请建 boards/$id/board.conf 手写配置覆盖" ;;
   *) die "$id 状态异常：$status" ;;
 esac
 
@@ -69,7 +70,7 @@ PART_UUID="${HP:0:8}-${HP:8:4}-4${HP:13:3}-a${HP:17:3}-${HP:20:12}"
 case "$soc" in
   rk3528|rk3566|rk3568) CMA=128M ;;
   rk3576)               CMA=256M ;;
-  rk3588)               CMA=512M ;;
+  rk3588|rk3588s)       CMA=512M ;;
   *)                    CMA=256M ;;
 esac
 

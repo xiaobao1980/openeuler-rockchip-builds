@@ -3,8 +3,11 @@
 # 从上游 armbian/build 同步 RK35xx 全系板卡清单 → boards/boards.tsv
 #
 # 上游是唯一定义源：https://github.com/armbian/build/tree/main/config/boards
-#   BOARDFAMILY="rk35xx"          → rk3528 / rk3566 / rk3568 / rk3576
-#   BOARDFAMILY="rockchip-rk3588" → rk3588
+#   BOARDFAMILY="rk35xx"          → rk3528 / rk3562 / rk3566 / rk3568 / rk3576
+#   BOARDFAMILY="rockchip-rk3588" → rk3588 / rk3588s
+#   BOARDFAMILY="rockchip64"      → 老 family 名，仍含 rk3566/rk3568 板（需按 DTB soc 过滤）
+# 后缀覆盖 .conf/.csc/.tvb/.wip/.eos（.eos=上游已归档，status 标 EOS 仅供盘点，不建议构建）
+# 赋值语法兼容两种：BOARDFAMILY="x" 与 declare -g BOARDFAMILY="x"（上游新版大量改用后者）
 #
 # 设计取舍：不生成「一板一个 conf 目录」，只生成一张 TSV。
 #   109 块板 × 一个 conf 目录 = 109 份几乎相同的文件，改一个默认值要改 109 处。
@@ -25,7 +28,9 @@ ROOT=$(cd "$HERE/.." && pwd)
 
 SRC_URL="https://github.com/armbian/build"
 SRC_REF="main"
-FAMILIES="rk35xx,rockchip-rk3588"
+FAMILIES="rk35xx,rockchip-rk3588,rockchip64"
+# RK35xx 全系白名单：rockchip64 family 里混有 rk3328/rk3399 等非 35xx 板，按 DTB 前缀过滤
+SOC_WHITELIST="rk3528|rk3562|rk3566|rk3568|rk3576|rk3588|rk3588s"
 LOCAL=""
 
 while [ $# -gt 0 ]; do
@@ -67,26 +72,33 @@ fi
 TSV="$ROOT/boards/boards.tsv"
 mkdir -p "$ROOT/boards"
 
-awk -F'"' -v fams="$FAMILIES" '
+awk -F'"' -v fams="$FAMILIES" -v socwl="$SOC_WHITELIST" '
   function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
-  function flush(   id,dtb,soc,n,i,ok){
+  function flush(   id,dtb,soc,n,i,ok,is_eos){
     if (family=="") return
     n=split(fams, want, ",")
     ok=0; for(i=1;i<=n;i++) if (want[i]==family) ok=1
     if(!ok) return
-    id=curfile; sub(/.*\//,"",id); sub(/\.(conf|csc|tvb|wip)$/,"",id)
+    id=curfile; sub(/.*\//,"",id); sub(/\.(conf|csc|tvb|wip|eos)$/,"",id)
     if(id=="_template") return
     dtb=fdt; sub(/^rockchip\//,"",dtb)
     soc=""; if (match(dtb,/^rk3[0-9][0-9][0-9]s?/)) soc=substr(dtb,1,RLENGTH)
-    status = (dtb=="" ? "NO_DTB" : (soc=="" ? "SOC_UNKNOWN" : "OK"))
+    # 只收 RK35xx 全系；rockchip64 family 中的 rk3328/rk3399 在此被过滤
+    if (soc!="" && soc !~ socwl) return
+    # rockchip64 family 且无 DTB 的板多为 rk3399/rock64 等非 35xx 老板，直接排除
+    # （rk35xx / rockchip-rk3588 family 的 NO_DTB 板保留，供手工补 DTB）
+    if (family=="rockchip64" && dtb=="") return
+    # .eos 已归档，status 标 EOS 供盘点；board-resolve.sh 会拒绝构建
+    is_eos=(curfile ~ /\.eos$/)
+    status = (dtb=="" ? "NO_DTB" : (soc=="" ? "SOC_UNKNOWN" : (is_eos ? "EOS" : "OK")))
     printf "%s\t%s\t%s\t%s\t%s\t%s\n", id, (bname==""?id:bname), (soc==""?"?":soc), dtb, family, status
   }
   FNR==1 { if (NR>1) flush(); family=""; bname=""; fdt=""; curfile=FILENAME }
-  /^BOARDFAMILY=/   { family=trim($2) }
-  /^BOARD_NAME=/    { bname=trim($2) }
-  /^BOOT_FDT_FILE=/ { fdt=trim($2) }
+  /^(declare -g )?BOARDFAMILY=/   { family=trim($2) }
+  /^(declare -g )?BOARD_NAME=/    { bname=trim($2) }
+  /^(declare -g )?BOOT_FDT_FILE=/ { fdt=trim($2) }
   END { flush() }
-' "$BOARDS_SRC"/*.conf "$BOARDS_SRC"/*.csc "$BOARDS_SRC"/*.tvb "$BOARDS_SRC"/*.wip 2>/dev/null \
+' "$BOARDS_SRC"/*.conf "$BOARDS_SRC"/*.csc "$BOARDS_SRC"/*.tvb "$BOARDS_SRC"/*.wip "$BOARDS_SRC"/*.eos 2>/dev/null \
   | awk -F'\t' '!seen[$1]++' \
   | sort -t$'\t' -k3,3 -k1,1 > "$TSV.tmp"
 
@@ -95,7 +107,8 @@ awk -F'"' -v fams="$FAMILIES" '
   printf '# 上游 commit: %s   生成时间: %s\n' "${SRC_COMMIT:-?}" "$(date -u +%FT%TZ)"
   printf '#\n# 字段: board_id \\t model \\t soc \\t dtb \\t family \\t status\n'
   printf '# status=OK 可直接构建；NO_DTB 上游用 fdtdir 自动匹配，需手工确认 DTB 名；\n'
-  printf '# SOC_UNKNOWN 的 dtb 命名不符合 rk3xxx-*.dtb 规则，需手工确认\n'
+  printf '# SOC_UNKNOWN 的 dtb 命名不符合 rk3xxx-*.dtb 规则，需手工确认；\n'
+  printf '# EOS 上游已归档(停止支持)，仅盘点用，board-resolve.sh 拒绝构建\n'
   printf 'board\tmodel\tsoc\tdtb\tfamily\tstatus\n'
   cat "$TSV.tmp"
 } > "$TSV"
