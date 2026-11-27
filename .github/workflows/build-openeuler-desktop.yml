@@ -271,20 +271,13 @@ jobs:
           if [ -f "$TAR.sha256" ]; then ( cd in && sha256sum -c "$(basename "$TAR").sha256" ); fi
           echo "BOOT_TAR=$TAR" >> "$GITHUB_ENV"
 
-      - name: 下载 openEuler 整机镜像
+      - name: 下载 openEuler 整机镜像（Release 优先 + 官方兜底）
         run: |
           set -euo pipefail
-          BASE="https://dl-cdn.openeuler.openatom.cn/openEuler-${OE_VER}/virtual_machine_img/aarch64"
-          F="openEuler-${OE_VER}-aarch64.qcow2.xz"
-          mkdir -p in
-          echo "下载 $BASE/$F"
-          curl -fL --retry 3 --retry-delay 5 -o "in/$F" "$BASE/$F"
-          curl -fsSL -o "in/$F.sha256sum" "$BASE/$F.sha256sum" || true
-          if [ -s "in/$F.sha256sum" ]; then
-            ( cd in && sha256sum -c "$F.sha256sum" ) || { echo "::error::校验失败"; exit 1; }
-          fi
-          ls -lh "in/$F"
-          echo "OE_XZ=in/$F" >> "$GITHUB_ENV"
+          # 公共脚本：优先本仓库 base-images Release（740 MiB 只传一次，绕开 openEuler CDN），
+          # 失败自动回退官方 5 源；含 SHA256 硬校验。详见 scripts/fetch-base-image.sh
+          OE_XZ=$(bash scripts/fetch-base-image.sh "$OE_VER" in)
+          echo "OE_XZ=$OE_XZ" >> "$GITHUB_ENV"
 
       - name: 拼装镜像 + 桌面集成
         run: |

@@ -1,0 +1,95 @@
+name: Publish openEuler base image
+
+# ============================================================================
+# 一次性把 openEuler aarch64 整机镜像（~740 MiB）发布到本仓库 Release，
+# 供三个 build-openeuler*.yml 永久复用，避免每次构建都向 openEuler CDN 拉。
+#
+# 为什么值得单独发一次：
+#   ① 740 MiB × 每次构建 × matrix 多板 = 大量重复外网流量；
+#      前四次 CI 失败里两次就是 openEuler CDN 403 / repomd 元数据损坏。
+#   ② boot 资产早已用 Release 托管（publish-boot-assets.yml），基础镜像照做即可，
+#      走 GitHub 内网传输，不受 openEuler 侧网络波动影响。
+#   ③ Release 资产无 7 天过期、无 actions/cache 的 10 GB 配额问题。
+#
+# 触发一次即可；仅当升级 openEuler 版本时才需要再跑（用新版本号切 tag）。
+# 构建侧逻辑见 scripts/fetch-base-image.sh：Release 优先，失败回退官方 5 源。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      oe_version:
+        description: "openEuler 版本（与构建工作流的 oe_version 保持一致）"
+        type: choice
+        required: true
+        default: 24.03-LTS-SP4
+        options:
+          - 24.03-LTS-SP4
+          - 24.03-LTS-SP3
+          - 24.03-LTS-SP2
+          - 24.03-LTS
+      tag:
+        description: "基础镜像专用 Release tag（勿与产物镜像/boot 资产混用）"
+        type: string
+        required: true
+        default: "base-images"
+      overwrite:
+        description: "资产已存在时覆盖（--clobber）"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: base image / ${{ inputs.oe_version }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      OE_VER: ${{ inputs.oe_version }}
+      BASE_TAG: ${{ inputs.tag }}
+      OVERWRITE: ${{ inputs.overwrite && '1' || '0' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # FORCE_OFFICIAL=1 避免自举：此刻 Release 里还没有这份资产。
+      # 公共脚本已完成 5 源回退 + SHA256 校验，失败即非零退出。
+      - name: 下载官方基础镜像
+        id: fetch
+        run: |
+          set -euo pipefail
+          IMAGE=$(FORCE_OFFICIAL=1 bash scripts/fetch-base-image.sh "$OE_VER" in)
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$IMAGE" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          ls -lh in/
+
+      - name: 发布到 Release
+        run: |
+          set -euo pipefail
+          F="openEuler-${OE_VER}-aarch64.qcow2.xz"
+          IMAGE="${{ steps.fetch.outputs.image }}"
+          SHA="${{ steps.fetch.outputs.sha256 }}"
+          echo "发布 ${IMAGE} （sha256=${SHA}）到 tag ${BASE_TAG}"
+
+          if gh release view "$BASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # 资产已存在：默认 --clobber 覆盖；用户关掉覆盖时直接报错，不静默保留旧版
+            if [ "$OVERWRITE" = "1" ]; then
+              gh release upload "$BASE_TAG" "$IMAGE" "$IMAGE.sha256sum" \
+                --repo "$GITHUB_REPOSITORY" --clobber
+            else
+              echo "::error::Release $BASE_TAG 已存在且未开启覆盖。请把 overwrite 打开。"
+              exit 1
+            fi
+          else
+            gh release create "$BASE_TAG" "$IMAGE" "$IMAGE.sha256sum" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "openEuler 基础镜像（构建复用）" \
+              --notes "免重复下载：build-openeuler*.yml 优先从此 Release 取基础镜像，失败回退官方镜像源。版本：${OE_VER}，sha256：${SHA}"
+          fi
+
+          echo "=== Release 资产 ==="
+          gh release view "$BASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,assets --jq '.tagName + " -> " + ([.assets[].name] | join(", "))'
