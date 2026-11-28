@@ -651,6 +651,221 @@ chmod 644 "$R/usr/share/applications/mpv.desktop"
 info "mpv-auto / mpv.conf / udev 已写"
 
 # ---------------------------------------------------------------------------
+# 7.6 USB 自动挂载 + audio-switch 音频出口切换（headless/桌面通用系统工具）
+#   参考脚本：setup-usb-automount.sh（U 盘/移动硬盘即插即挂 + 开机补挂）、
+#             audio-switch.sh（写 /etc/asound.conf 切换 3.5mm/HDMI/SPDIF）。
+#   注意：chroot 内 systemctl enable / udevadm 不可靠，故按本仓库惯例直接写
+#         udev 规则文件 + 建 multi-user.target.wants 软链，开机由 systemd/udev 自行加载。
+#   media-only 与桌面都写：U 盘片源与音频出口在两种模式下都需要。
+# ---------------------------------------------------------------------------
+log "写 USB 自动挂载 + audio-switch"
+
+# USB 文件系统驱动：exFAT/NTFS 是测试 U 盘常见格式，缺则挂载助手 SKIP
+dnf_install_loose ntfs-3g exfatprogs usbutils
+
+# 挂载助手：udev 回调(usb-automount %k) + 手动补挂(usb-automount sda1)，幂等
+cat > "$R/usr/local/bin/usb-automount" <<'USBAUTOEOF'
+#!/usr/bin/env bash
+# udev 回调：usb-automount <kernel名>  挂载 | usb-automount --remove <kernel名>  卸载
+# 手动补挂：usb-automount sda1（开机服务也是逐个分区调它）
+set -u
+LOG=/var/log/usb-automount.log
+say(){ echo "$(date '+%F %T') $*" >> "$LOG"; }
+[ $# -ge 1 ] || exit 0
+
+if [ "$1" = "--remove" ]; then
+    dev="/dev/$2"
+    mp=$(findmnt -n -o TARGET "$dev" 2>/dev/null | head -1)
+    [ -n "$mp" ] && umount -l "$dev" && rmdir "$mp" 2>/dev/null
+    say "REMOVE $dev -> ${mp:-未挂载}"
+    exit 0
+fi
+
+dev="/dev/$1"
+# 已挂载则跳过（天然幂等：重复调用直接退出）
+findmnt -n "$dev" >/dev/null 2>&1 && exit 0
+# 分区就绪等待：慢盘/大移动硬盘识别慢，最长 10 秒（0.5s × 20）
+WAIT=10
+for i in $(seq 1 $((WAIT*2))); do
+    fstype=$(blkid -o value -s TYPE "$dev" 2>/dev/null)
+    [ -n "$fstype" ] && break
+    sleep 0.5
+done
+[ -n "$fstype" ] || { say "TIMEOUT $dev 分区就绪超时"; exit 0; }
+label=$(blkid -o value -s LABEL "$dev" 2>/dev/null | tr -cd '[:alnum:]_-')
+mp="/mnt/usb${label:+-$label}"
+
+mkdir -p "$mp"
+case "$fstype" in
+    ext4|ext3|ext2) mount "$dev" "$mp" ;;
+    vfat|fat32)     mount -o iocharset=utf8,uid=1000,gid=1000,umask=022 "$dev" "$mp" ;;
+    exfat)          mount -o uid=1000,gid=1000,umask=022 "$dev" "$mp" ;;
+    ntfs)           mount -t ntfs-3g -o remove_hiberfile,big_writes,uid=1000,gid=1000,umask=022 "$dev" "$mp" ;;
+    *)              say "SKIP $dev 未知文件系统 $fstype"; exit 0 ;;
+esac
+say "ADD $dev -> $mp ($fstype)"
+USBAUTOEOF
+chmod +x "$R/usr/local/bin/usb-automount"
+
+cat > "$R/etc/udev/rules.d/99-usb-automount.rules" <<'USBRULEEOF'
+# USB 存储自动挂载（integrate-desktop.sh 写入）
+ACTION=="add",    SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_TYPE}!="", \
+    RUN+="/usr/local/bin/usb-automount %k"
+ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", \
+    RUN+="/usr/local/bin/usb-automount --remove %k"
+USBRULEEOF
+
+# 开机补挂：udev add 只在"插入瞬间"触发，开机时已插的盘靠这个 oneshot 轮询补挂
+cat > "$R/usr/local/bin/usb-automount-boot" <<'USBOOTEOF'
+#!/usr/bin/env bash
+# 开机轮询未挂载的 USB 分区(sd*)，挂完全部或超时 5 分钟即退出
+for round in $(seq 1 60); do
+    did_something=0
+    for sys in /sys/class/block/sd*; do
+        [ -e "$sys/partition" ] || continue          # 只要分区，不要整盘
+        k=$(basename "$sys")
+        findmnt -n "/dev/$k" >/dev/null 2>&1 && continue
+        /usr/local/bin/usb-automount "$k" && did_something=1
+    done
+    [ "$did_something" = 0 ] && exit 0               # 一轮无待处理项 = 全挂完
+    sleep 5
+done
+echo "$(date '+%F %T') BOOT-TIMEOUT 仍有未挂载 USB 分区" >> /var/log/usb-automount.log
+USBOOTEOF
+chmod +x "$R/usr/local/bin/usb-automount-boot"
+
+cat > "$R/etc/systemd/system/usb-automount-boot.service" <<'USBSVCEOF'
+[Unit]
+Description=USB storage auto mount at boot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/usb-automount-boot
+
+[Install]
+WantedBy=multi-user.target
+USBSVCEOF
+mkdir -p "$R/etc/systemd/system/multi-user.target.wants"
+ln -sf /etc/systemd/system/usb-automount-boot.service \
+  "$R/etc/systemd/system/multi-user.target.wants/usb-automount-boot.service"
+
+# audio-switch：命令式切换默认音频出口（写 /etc/asound.conf，全部应用跟随）
+cat > "$R/usr/local/bin/audio-switch" <<'AUDIOSWEOF'
+#!/usr/bin/env bash
+# audio-switch —— RK3576/35xx 音频出口切换（3.5mm / HDMI / SPDIF）
+# 原理：写 /etc/asound.conf 把 alsa "default" 指向目标卡，全部应用跟随；
+#       卡名从 /proc/asound/cards 按卡号自动探测（换板无需改声卡名，探测失败回退内建名）；
+#       3.5mm 若存在 HT5010 控件（numid=31/3）则自动补路由，其他 codec 自动跳过。
+# 用法：
+#   audio-switch 3.5|hdmi|spdif   切换（需 root）
+#   audio-switch status           查看当前出口
+#   audio-switch test             播 3 秒 1kHz 测试音（需 mpv 或 speaker-test）
+set -u
+CONF=/etc/asound.conf
+
+get_cur() { [ -f "$CONF" ] && grep -o 'hw:[A-Za-z_0-9]*' "$CONF" | head -1 || echo "未配置"; }
+
+# 从 /proc/asound/cards 按声卡「名字」定位卡号（不是写死 card0/1/2）。
+# 实测 RK3588 板上 card0=rockchiphdmiin(HDMI 输入)、card1=realtekrt5616co(3.5mm)、card2=hdmi0，
+# 若照搬固定卡号会把 3.5mm 误指向 HDMI-IN。按名字匹配 + 排除关键字，跨板通用。
+# card_pick <包含正则> <排除正则> → 首个匹配的卡号
+card_pick() {
+    awk -v inc="$1" -v exc="${2:-}" '
+        $1 ~ /^[0-9]+$/ {
+            name=$2; gsub(/^\[|\]:?$/, "", name); low=tolower(name)
+            if (low ~ inc && (exc == "" || low !~ exc)) { print $1; exit }
+        }' /proc/asound/cards 2>/dev/null
+}
+
+# 从 /proc/asound/cards 按卡号取真实卡名（如 " 1 [realtekrt5616co]:" → realtekrt5616co）
+card_name() {
+    awk -v n="$1" '$1 == n { gsub(/^\[|\]:?$/, "", $2); print $2; exit }' /proc/asound/cards 2>/dev/null
+}
+
+# HT5010 专属路由：仅当声卡上存在 numid=31 控件才设置（其他 codec / 未装 amixer 自动跳过）
+fix_ht5010_route() {
+    command -v amixer >/dev/null 2>&1 || return 0
+    local probe
+    probe="$(amixer -c "$1" cget numid=31 2>&1)"
+    echo "$probe" | grep -q 'numid=31' || return 0   # 没拿到真实控件 → 跳过
+    amixer -c "$1" cset numid=31 0 >/dev/null 2>&1   # Transmit SDO2 Source = From PATH0
+    amixer -c "$1" cset numid=3  0 >/dev/null 2>&1   # SDIx Select = Auto（非 Auto 会算出 bclk=0）
+}
+
+do_switch() {
+    local name="$1" inc="$2" exc="$3"
+    local num card
+    num="$(card_pick "$inc" "$exc")"
+    [ -n "$num" ] || { echo "未找到 $name 对应声卡（audio-switch list 查看）"; return 1; }
+    card="$(card_name "$num")"
+    cat > "$CONF.tmp" << EOF
+# 由 audio-switch 生成（$(date '+%F %T')）：默认输出 → $name (card$num: $card)
+pcm.!default {
+    type plug
+    slave.pcm "hw:$card"
+}
+ctl.!default {
+    type hw
+    card $card
+}
+EOF
+    mv "$CONF.tmp" "$CONF" || { echo "写 $CONF 失败（需要 root）"; return 1; }
+    case "$inc" in *rt5616*|*es8388*|*ht5010*) fix_ht5010_route "$num" ;; esac
+    echo "已切换默认音频出口 → $name (hw:$card / card$num)"
+    echo "   当前 $CONF: $(get_cur)"
+    echo "   验证：audio-switch status；听音用 audio-switch test 或直接播片"
+}
+
+case "${1-}" in
+    list|ls)
+        echo "== 声卡清单（卡号 / 名字）=="; cat /proc/asound/cards ;;
+    3.5|35|3.5mm)  do_switch "3.5mm(板载 codec)" 'rt5616|es8388|es8323|ht5010|wm8960|audio|codec' 'hdmi|dp|in|usb' ;;
+    hdmi)          do_switch "HDMI"   'hdmi' 'in' ;;
+    spdif|spdif-out) do_switch "SPDIF" 'spdif|iec958|digital' '' ;;
+    status)
+        echo "== 声卡清单 =="; cat /proc/asound/cards
+        echo "== 当前默认 =="; get_cur
+        if command -v amixer >/dev/null 2>&1; then
+            probe="$(amixer -c 0 cget numid=31 2>&1)"
+            if echo "$probe" | grep -q 'numid=31'; then
+                for id in 31 3; do
+                    v="$(amixer -c 0 cget numid=$id 2>/dev/null | grep -o 'values=[0-9]*' | head -1)"
+                    echo "   HT5010 numid=$id: ${v:-?}（应为 values=0）"
+                done
+            else
+                echo "   （未检测到 HT5010 控件 或 声卡不可访问：$(echo "$probe" | head -1)）"
+            fi
+        else
+            echo "   （未装 alsa-utils，无法读 HT5010 路由）"
+        fi ;;
+    test)
+        if command -v mpv >/dev/null 2>&1; then
+            mpv --no-config --vo=null --ao=alsa --audio-device=alsa/default \
+                --msg-level=ao=no 'av://lavfi:sine=frequency=1000:duration=3' 2>/dev/null \
+                && echo "测试音已播 3 秒（1kHz）"
+        elif command -v speaker-test >/dev/null 2>&1; then
+            speaker-test -c2 -twav -l1 2>/dev/null | tail -1
+        else
+            echo "无 mpv / speaker-test，无法播测试音（dnf install alsa-utils 后再试）"
+        fi ;;
+    *)
+        echo "用法:"
+        echo "  audio-switch list   # 列出声卡（卡号/名字，选出口前先看）"
+        echo "  audio-switch 3.5    # 切 3.5mm（按名字匹配板载 codec，自动补 HT5010 路由）"
+        echo "  audio-switch hdmi   # 切 HDMI（排除 HDMI-IN，不会误切输入卡）"
+        echo "  audio-switch spdif  # 切 SPDIF"
+        echo "  audio-switch status # 查看当前出口与路由"
+        echo "  audio-switch test   # 播 3 秒测试音验证"
+        exit 1 ;;
+esac
+AUDIOSWEOF
+chmod +x "$R/usr/local/bin/audio-switch"
+
+info "USB 自动挂载(udev+开机 service)、audio-switch 已写入 /usr/local/bin"
+
+# ---------------------------------------------------------------------------
 # 7.5 kiosk 展示模式（可选）：labwc 会话 autostart 直接全屏播 mpv
 # ---------------------------------------------------------------------------
 if [ "$KIOSK" = "1" ]; then
