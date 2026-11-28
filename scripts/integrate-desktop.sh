@@ -165,6 +165,19 @@ dnf_install_loose \
   systemd-devel hwdata \
   xorg-x11-server-Xwayland xorg-x11-server-Xwayland-devel xterm
 
+# 中文字体：最小 rootfs 无任何 :lang=zh 字体（实测 fc-list :lang=zh = 0），
+# Kodi/mpv OSD、UKUI/labwc 桌面与文件名中文都会显示成方框。
+# google-noto-cjk-fonts 覆盖简/繁/日/韩，为 openEuler OE-OS 源稳定包；
+# cjkuni-ukai-fonts（楷体）作补充，两者均走 dnf_install_loose 容忍缺包。
+log "安装中文字体"
+dnf_install_loose google-noto-cjk-fonts cjkuni-ukai-fonts
+if cr "fc-list :lang=zh 2>/dev/null | grep -q ."; then
+  cr "fc-cache -f >/dev/null 2>&1" || warn "fc-cache 刷新失败（不影响字体文件本身）"
+  info "中文字体已装: $(cr 'fc-list :lang=zh 2>/dev/null | wc -l') 款"
+else
+  warn "中文字体未装上：Kodi/mpv OSD 与桌面中文可能显示方框"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. git clone（宿主机执行，网络更稳）
 # ---------------------------------------------------------------------------
